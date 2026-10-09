@@ -1,0 +1,105 @@
+[profiles.jailed]
+mode = "wireguard_ssh_reverse"
+
+# Rules are evaluated from top-to-bottom.
+# Each matching rule performs its action/tunnel immediately.
+# Packets matching no rule are dropped.
+rules = [
+  { name = "Reject IPv6 traffic", saddr = [
+    "::/0",
+  ], target = "action:reject" },
+
+  { name = "Reject QUIC to force tcp", protocol = [
+    "udp",
+  ], dport = [
+    443,
+  ], target = "action:reject" },
+
+  { name = "Bypass TLS Fingerprinting", daddr = [
+    "123.123.123.123",
+  ], dport = [
+    443,
+  ], target = "action:passthrough" },
+
+  { name = "Drop analytics", protocol = [
+    "udp",
+  ], dport = [
+    1900,
+    5353,
+  ], target = "action:drop" },
+
+  { name = "Redirect HTTP(S)", protocol = [
+    "tcp",
+  ], dport = [
+    80,
+    443,
+  ], target = "tunnel:proxy_main" },
+
+  # Default Route: Route all other matching subnet traffic through the internet
+  { name = "Default Route", target = "action:passthrough" },
+]
+
+[profiles.jailed.mode_opts]
+ssh_host = "xxxxxxxx.myfancydomain.ch"
+ssh_user = "ubuntu"
+# Elevate privileges on the remote gateway VPS via sudo
+elevation = "sudo"
+# This defines each SSH reverse tcp tunnel
+tunnels = { proxy_main = 8080 }
+
+# Optional raw commands issued on the VPS before and after setting up tunnels.
+# This allows to perform custom actions for special cases.
+[profiles.jailed.hooks]
+pre_up = ""
+# Example: capture all mobile device traffic.
+post_up = "systemd-run --collect --unit=wg-pcap tcpdump -i wg0 -w /var/tmp/wg0.pcap"
+pre_down = "systemctl stop wg-pcap || true"
+post_down = ""
+
+[profiles.rooted]
+mode = "adb_reverse"
+
+rules = [
+  { name = "Reject IPv6 traffic", saddr = [
+    "::/0",
+  ], target = "action:reject" },
+
+  { name = "Reject QUIC to force tcp", protocol = [
+    "udp",
+  ], dport = [
+    443,
+  ], target = "action:reject" },
+
+  { name = "Drop traffic from a specific owner", protocol = [
+    "udp",
+  ], dport = [
+    1900,
+    5353,
+  ], target = "action:drop" },
+
+  # Route custom binary tcp protocol traffic from a specific uid to a local analyst tool
+  { name = "Telemetry Route", skuid = [
+    10011,
+  ], protocol = [
+    "tcp",
+  ], dport = [
+    9999,
+  ], target = "tunnel:telemetry" },
+
+  { name = "Redirect HTTP(S) for the app in scope", protocol = [
+    "tcp",
+  ], dport = [
+    80,
+    443,
+  ], app = [
+    "com.example.app",
+  ], target = "tunnel:main" },
+
+  # Default Route: Route all other matching subnet traffic through the internet
+  { name = "Default Route", target = "action:passthrough" },
+]
+
+[profiles.rooted.mode_opts]
+elevation = "su"
+serial = "emulator-5554"
+tunnels = { main = 8080, telemetry = 8081 }

@@ -1,0 +1,14 @@
+[profiles.legacy]
+mode = "wireguard_ssh_reverse"
+
+rules = [
+  { name = "Redirect HTTP", protocol = ["tcp"], dport = [80], target = "tunnel:proxy_main" },
+  { name = "Redirect HTTPS", protocol = ["tcp"], dport = [443], target = "tunnel:proxy_main" },
+  { name = "Allow internet access for the mobile device", target = "action:passthrough" }
+]
+
+[profiles.legacy.mode_opts]
+ssh_host = "test.local"
+ssh_user = "test"
+elevation = "sudo"
+tunnels = { proxy_main = 8080 }
