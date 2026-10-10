@@ -1,0 +1,30 @@
+services:
+  vps:
+    build:
+      context: .
+      dockerfile: tests/integration/docker/vps/Dockerfile
+    container_name: netlane-vps
+    privileged: true
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    ports:
+      - "2222:22"
+      - "51820:51820/udp"
+    networks:
+      - netlane-test
+
+  redroid:
+    image: redroid/redroid:11.0.0-latest
+    container_name: netlane-redroid
+    privileged: true
+    ports:
+      - "5555:5555"
+    networks:
+      - netlane-test
+
+networks:
+  netlane-test:
+    name: netlane-test

@@ -236,5 +236,16 @@ For debugging, `-v` before the command shows executed commands and `--log <path>
 uv sync
 uv run black .
 uv run pyright
-uv run pytest
+
+# Run unit tests
+uv run pytest tests/unit
+
+# Run integration tests (requires test containers)
+docker compose -f docker-compose.test.yml up -d
+uv run pytest tests/integration
+docker compose -f docker-compose.test.yml down
 ```
+
+> [!TIP]
+> When running inside a VS Code Dev Container, integration tests automatically detect and connect to the VPS container via `host.docker.internal`. You can override the host with `NETLANE_TEST_VPS_HOST` if needed.
+

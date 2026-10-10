@@ -17,7 +17,7 @@ from netlane.config import (
     parse_config_string,
 )
 
-ROOT_DIR = Path(__file__).resolve().parent.parent
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 RESOURCES_DIR = ROOT_DIR / "tests" / "resources"
 
 ADB_OPTS = """
