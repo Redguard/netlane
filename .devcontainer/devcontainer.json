@@ -3,11 +3,14 @@
   "build": {
     "dockerfile": "Dockerfile"
   },
+  "mounts": [
+    "source=netlane-bashhistory,target=/commandhistory,type=volume"
+  ],
   "remoteUser": "vscode",
   "remoteEnv": {
     "PATH": "${containerWorkspaceFolder}/.venv/bin:${containerEnv:PATH}"
   },
-  "postCreateCommand": "uv sync",
+  "postCreateCommand": "sudo chown -R $(whoami): /commandhistory && uv sync",
   "customizations": {
     "vscode": {
       "extensions": [
