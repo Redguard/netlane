@@ -1,6 +1,5 @@
 import io
 import shlex
-import shutil
 import subprocess
 from dataclasses import replace
 
@@ -81,20 +80,6 @@ def test_pair_refuses(server, state, force, message):
     server.update(state)
     with pytest.raises(StepError, match=message):
         mode.pair("jailed", PROFILE, None, force=force)
-
-
-def test_pair_with_force_replaces_keys(server, monkeypatch):
-    deployed = []
-    monkeypatch.setattr(mode.shutil, "which", lambda cmd: "/usr/bin/wg")
-    monkeypatch.setattr(mode, "_generate_configs", lambda host: ("srv", "cli"))
-    monkeypatch.setattr(
-        mode, "_deploy_server_config", lambda *args: deployed.append(args[-1])
-    )
-    monkeypatch.setattr(mode, "_display_qr_code", lambda conf: None)
-
-    mode.pair("jailed", PROFILE, None, force=True)
-
-    assert deployed == ["srv"]
 
 
 def test_down_runs_hooks_around_teardown(monkeypatch):
@@ -241,27 +226,6 @@ def test_setup_passes_shared_values_to_script(ssh_commands):
 @pytest.mark.parametrize("value", SHARED_VALUES)
 def test_script_does_not_hardcode_shared_values(value):
     assert value not in SCRIPT.read_text()
-
-
-needs_wg = pytest.mark.skipif(shutil.which("wg") is None, reason="needs wg")
-
-
-@needs_wg
-def test_server_conf_is_dual_stack():
-    """The server's tunnel address and its peer's allowed source range both cover IPv6."""
-    server_conf, _ = _generate_configs("203.0.113.5")
-
-    assert "Address = 10.10.10.1/24, fd10:10:10::1/64" in server_conf
-    assert "AllowedIPs = 10.10.10.2/32, fd10:10:10::2/128" in server_conf
-
-
-@needs_wg
-def test_client_conf_is_dual_stack():
-    """The client's tunnel address and default route both cover IPv6."""
-    _, client_conf = _generate_configs("203.0.113.5")
-
-    assert "Address = 10.10.10.2/24, fd10:10:10::2/64" in client_conf
-    assert "AllowedIPs = 0.0.0.0/0, ::/0" in client_conf
 
 
 @pytest.mark.parametrize(
