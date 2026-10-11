@@ -1,6 +1,3 @@
-import socket
-import threading
-
 import pytest
 
 HOOK_FILES = " ".join(
@@ -68,23 +65,10 @@ def test_up_and_down_lifecycle(netlane_adb, device_exec, adb_reverse_list):
 
 
 @pytest.mark.integration
-def test_tunnel_redirects_traffic_to_local_port(netlane_adb, device_exec):
-    received = []
-
-    def serve(listener: socket.socket) -> None:
-        try:
-            conn, _ = listener.accept()
-        except OSError:
-            return
-        with conn:
-            received.append(conn.recv(1024))
-            conn.sendall(b"pong\n")
-
-    with socket.create_server(("127.0.0.1", 8080)) as listener:
-        listener.settimeout(20)
-        server = threading.Thread(target=serve, args=(listener,), daemon=True)
-        server.start()
-
+def test_tunnel_redirects_traffic_to_local_port(
+    netlane_adb, device_exec, local_listener
+):
+    with local_listener(8080) as received:
         with netlane_adb.up("rooted"):
             # 192.0.2.1 is unroutable (TEST-NET-1), only the DNAT rule can answer.
             # nc exits on stdin EOF, keep it open until the reply made it back.
@@ -92,10 +76,49 @@ def test_tunnel_redirects_traffic_to_local_port(netlane_adb, device_exec):
                 "(echo ping; sleep 2) | nc -w 5 192.0.2.1 80", check=False
             )
 
-        server.join(timeout=20)
-
     assert received == [b"ping\n"]
     assert "pong" in res.stdout
+
+
+@pytest.mark.integration
+def test_rule_targets_and_default_deny(
+    adb_reverse_config, tmp_path, create_netlane, device_send, local_listener, remote
+):
+    cfg = tmp_path / "targets_config.toml"
+    # The tunnel rule is restricted to IPv4, the container kernel may lack IPv6 NAT.
+    cfg.write_text(adb_reverse_config("""
+  { name = "Drop", protocol = ["tcp"], dport = [8443], target = "action:drop" },
+  { name = "Reject", protocol = ["tcp"], dport = [443], target = "action:reject" },
+  { name = "Redirect HTTP", daddr = ["0.0.0.0/0"], protocol = ["tcp"], dport = [80], target = "tunnel:proxy_main" },
+  { name = "Pass DNS", protocol = ["udp"], dport = [53], target = "action:passthrough" },
+"""))
+    runner = create_netlane(cfg)
+    runner.down("rooted", check=False)
+
+    with local_listener(8080) as received, runner.up("rooted"):
+        redirected = device_send(remote.address, 80, root=True)
+        dropped = device_send(remote.address, 8443, root=True, timeout=3)
+        rejected = device_send(remote.address, 443, root=True, timeout=3)
+        unmatched = device_send(remote.address, 8444, root=True, timeout=3)
+        passed = device_send(remote.address, 53, udp=True, root=True)
+        passed_peers = remote.peers("udp/53", passed.payload, wait=5)
+
+    # tunnel: ends up on the local port instead of the remote host
+    assert received == [redirected.line]
+    assert remote.peers("tcp/80", redirected.payload) == []
+
+    # action:drop and action:reject never leave the device
+    assert dropped.returncode != 0
+    assert remote.peers("tcp/8443", dropped.payload) == []
+    assert rejected.returncode != 0
+    assert remote.peers("tcp/443", rejected.payload) == []
+
+    # Traffic matching no rule is dropped
+    assert unmatched.returncode != 0
+    assert remote.peers("tcp/8444", unmatched.payload) == []
+
+    # action:passthrough reaches the remote host, which is what makes the above meaningful
+    assert len(passed_peers) == 1
 
 
 @pytest.mark.integration

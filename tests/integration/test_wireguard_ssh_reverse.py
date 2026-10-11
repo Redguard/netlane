@@ -4,6 +4,64 @@ import pytest
 
 
 @pytest.mark.integration
+def test_setup_installs_wireguard(setup_vps, vps_exec):
+    res = vps_exec("which wg")
+    assert res.returncode == 0
+    assert "/wg" in res.stdout
+
+
+@pytest.mark.integration
+def test_setup_installs_conntrack(setup_vps, vps_exec):
+    res = vps_exec("which conntrack")
+    assert res.returncode == 0
+    assert "/conntrack" in res.stdout
+
+
+@pytest.mark.integration
+def test_setup_enables_nftables(setup_vps, vps_exec):
+    res = vps_exec("systemctl is-active nftables")
+    assert res.stdout.strip() == "active"
+
+
+@pytest.mark.integration
+def test_setup_configures_nftables_rules(setup_vps, vps_exec):
+    res = vps_exec("nft list table inet base_filter")
+    assert res.returncode == 0
+    assert "set trusted_ifaces" in res.stdout
+    assert "chain input" in res.stdout
+    assert "chain forward" in res.stdout
+
+
+@pytest.mark.integration
+def test_setup_configures_sshd_gatewayports(setup_vps, vps_exec):
+    res = vps_exec("cat /etc/ssh/sshd_config.d/99-netlane-gatewayports.conf")
+    assert res.returncode == 0
+    assert "GatewayPorts clientspecified" in res.stdout
+
+
+@pytest.mark.integration
+def test_setup_is_idempotent(setup_vps, netlane, vps_exec):
+    res = netlane.setup("jailed", distro="ubuntu")
+    assert res.returncode == 0
+
+    # Verify everything remains correctly installed and configured after re-running setup
+    res_wg = vps_exec("which wg")
+    assert res_wg.returncode == 0
+    assert "/wg" in res_wg.stdout
+
+    res_nft = vps_exec("systemctl is-active nftables")
+    assert res_nft.stdout.strip() == "active"
+
+    res_table = vps_exec("nft list table inet base_filter")
+    assert res_table.returncode == 0
+    assert "set trusted_ifaces" in res_table.stdout
+
+    res_sshd = vps_exec("cat /etc/ssh/sshd_config.d/99-netlane-gatewayports.conf")
+    assert res_sshd.returncode == 0
+    assert "GatewayPorts clientspecified" in res_sshd.stdout
+
+
+@pytest.mark.integration
 def test_pair_generates_and_deploys_configs(netlane, tmp_path, vps_exec):
     client_conf_path = tmp_path / "client.conf"
     res = netlane.pair("jailed", save_path=client_conf_path, force=True)
@@ -96,6 +154,103 @@ def test_up_and_down_lifecycle(paired_vps, netlane, vps_exec):
     assert down_fwd4.stdout.strip() == "0"
     down_fwd6 = vps_exec("sysctl -n net.ipv6.conf.all.forwarding")
     assert down_fwd6.stdout.strip() == "0"
+
+
+@pytest.mark.integration
+def test_client_traffic_is_redirected_to_local_port(
+    paired_client, netlane, local_listener
+):
+    with local_listener(8080) as received:
+        with netlane.up("jailed"):
+            # 192.0.2.1 is unroutable (TEST-NET-1), only the DNAT rule can answer.
+            sent = paired_client.send("192.0.2.1", 80)
+
+    assert received == [sent.line]
+    assert sent.reply == "pong\n"
+
+
+@pytest.mark.integration
+def test_client_cannot_reach_tunnel_port_directly(
+    paired_client, netlane, local_listener
+):
+    with local_listener(8080) as received:
+        with netlane.up("jailed"):
+            # Only connections redirected by a tunnel rule may enter the tunnel.
+            sent = paired_client.send("10.10.10.1", 8080, timeout=3)
+
+    assert sent.returncode != 0
+    assert received == []
+
+
+@pytest.mark.integration
+def test_client_ipv6_traffic_is_rejected(paired_client, netlane, local_listener):
+    # IPv6 connections leave the tunnel on the local IPv6 loopback.
+    with local_listener(8080, host="::1") as received:
+        with netlane.up("jailed"):
+            # 2001:db8::1 is unroutable (documentation prefix). Without the reject
+            # rule, the HTTP rule would redirect it into the tunnel.
+            sent = paired_client.send("2001:db8::1", 80)
+
+    assert sent.returncode != 0
+    assert received == []
+
+
+@pytest.mark.integration
+def test_rule_targets_and_default_deny(
+    setup_vps, vps_server, tmp_path, create_netlane, wg_client, local_listener, remote
+):
+    cfg = tmp_path / "targets_config.toml"
+    cfg.write_text(f"""[profiles.targets]
+mode = "wireguard_ssh_reverse"
+
+rules = [
+  {{ name = "Drop", protocol = ["tcp"], dport = [8443], target = "action:drop" }},
+  {{ name = "Reject", protocol = ["tcp"], dport = [443], target = "action:reject" }},
+  {{ name = "Redirect HTTP", protocol = ["tcp"], dport = [80], target = "tunnel:proxy_main" }},
+  {{ name = "Pass DNS", protocol = ["udp"], dport = [53], target = "action:passthrough" }},
+]
+
+[profiles.targets.mode_opts]
+ssh_host = "{vps_server['host']}"
+ssh_user = "{vps_server['user']}"
+elevation = "sudo"
+tunnels = {{ proxy_main = 8080 }}
+""")
+    runner = create_netlane(cfg)
+    client_conf_path = tmp_path / "targets_client.conf"
+    runner.pair("targets", save_path=client_conf_path, force=True)
+
+    with (
+        wg_client(client_conf_path.read_text()) as client,
+        local_listener(8080) as received,
+        local_listener(8080, host="::1") as received_v6,
+        runner.up("targets"),
+    ):
+        redirected = client.send(remote.address, 80)
+        redirected_v6 = client.send("2001:db8::1", 80)
+        dropped = client.send(remote.address, 8443, timeout=3)
+        rejected = client.send(remote.address, 443, timeout=3)
+        unmatched = client.send(remote.address, 8444, timeout=3)
+        passed = client.send(remote.address, 53, udp=True)
+        passed_peers = remote.peers("udp/53", passed.payload, wait=5)
+
+    # tunnel: both address families end up on the local port
+    assert received == [redirected.line]
+    assert received_v6 == [redirected_v6.line]
+    assert remote.peers("tcp/80", redirected.payload) == []
+
+    # action:drop times out, action:reject fails at once
+    assert dropped.returncode == 124
+    assert remote.peers("tcp/8443", dropped.payload) == []
+    assert rejected.returncode == 1
+    assert remote.peers("tcp/443", rejected.payload) == []
+
+    # Traffic matching no rule is dropped
+    assert unmatched.returncode == 124
+    assert remote.peers("tcp/8444", unmatched.payload) == []
+
+    # action:passthrough reaches the remote host, which is what makes the above meaningful
+    assert len(passed_peers) == 1
 
 
 @pytest.mark.integration

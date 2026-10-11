@@ -47,6 +47,15 @@ services:
     networks:
       - netlane-test
 
+  remote:
+    # A host on the "internet" beyond the gateway or device, recording what reaches it.
+    build:
+      context: tests/integration/docker/remote
+    container_name: netlane-remote
+    init: true
+    networks:
+      - netlane-test
+
 networks:
   netlane-test:
     name: netlane-test

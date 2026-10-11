@@ -1,5 +1,6 @@
 import os
 import queue
+import re
 import shlex
 import shutil
 import signal
@@ -9,9 +10,11 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Generator, Optional
+from typing import Callable, Generator, Optional
 
 import pytest
 
@@ -70,6 +73,16 @@ ADB_HOST = _detect_host("NETLANE_TEST_ADB_HOST", ADB_PORT)
 ADB_SERIAL = f"{ADB_HOST}:{ADB_PORT}"
 # Redroid's adbd runs as the shell user and ships su. Set to "" for a device with root adbd.
 ADB_ELEVATION = os.environ.get("NETLANE_TEST_ADB_ELEVATION", "su")
+
+# The WireGuard client of the `wg_client` fixture, a network namespace on the VPS.
+CLIENT_NETNS = "netlane-client"
+CLIENT_WG_IFACE = "wgclient"
+
+REMOTE_CONTAINER = os.environ.get("NETLANE_TEST_REMOTE_CONTAINER", "netlane-remote")
+
+# Stands in for the placeholder app of the shipped rooted profile. It runs as the
+# ADB shell's uid, so traffic sent from an unelevated shell is that app's traffic.
+ROOTED_APP = "com.android.shell"
 
 # Set to "1" (as CI does) to fail instead of skip when a test container is unavailable.
 REQUIRE_SERVICES = os.environ.get("NETLANE_TEST_REQUIRE_SERVICES") == "1"
@@ -202,7 +215,7 @@ def vps_server(configure_ssh):
     return {"host": VPS_HOST, "port": VPS_PORT, "user": VPS_USER}
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def vps_exec(vps_server):
     """Helper to run commands inside the VPS via SSH for test assertions."""
 
@@ -520,7 +533,7 @@ def paired_vps(netlane: NetlaneRunner) -> NetlaneRunner:
     return netlane
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def create_netlane():
     """Factory fixture to create NetlaneRunner instances for custom configs."""
 
@@ -570,22 +583,22 @@ def adb_device():
     return {"serial": ADB_SERIAL, "elevation": ADB_ELEVATION}
 
 
-@pytest.fixture
+def _device_exec(
+    cmd: str, check: bool = True, timeout: float = 30.0, root: bool = True
+) -> subprocess.CompletedProcess:
+    if root and ADB_ELEVATION:
+        # Not every su takes -c, but they all read a script from stdin.
+        cmd = f"echo {shlex.quote(cmd)} | {ADB_ELEVATION}"
+    res = _adb("shell", "-n", cmd, timeout=timeout)
+    if check:
+        res.check_returncode()
+    return res
+
+
+@pytest.fixture(scope="session")
 def device_exec(adb_device):
     """Helper to run commands as root on the Android device for test assertions."""
-
-    def _exec(
-        cmd: str, check: bool = True, timeout: float = 30.0
-    ) -> subprocess.CompletedProcess:
-        if ADB_ELEVATION:
-            # Not every su takes -c, but they all read a script from stdin.
-            cmd = f"echo {shlex.quote(cmd)} | {ADB_ELEVATION}"
-        res = _adb("shell", "-n", cmd, timeout=timeout)
-        if check:
-            res.check_returncode()
-        return res
-
-    return _exec
+    return _device_exec
 
 
 @pytest.fixture
@@ -641,3 +654,269 @@ def netlane_adb(adb_integration_config) -> Generator[NetlaneRunner, None, None]:
     runner.down("rooted", check=False)
     yield runner
     runner.down("rooted", check=False)
+
+
+@dataclass
+class Sent:
+    """A line a test sent from the client or device, with a payload unique to it."""
+
+    payload: str
+    returncode: int
+    reply: str
+
+    @property
+    def line(self) -> bytes:
+        """The line as a `local_listener` receives it."""
+        return f"{self.payload}\n".encode()
+
+
+@pytest.fixture(scope="session")
+def local_listener():
+    """
+    Factory for a listener on a local tunnel port, standing in for the analyst's proxy.
+    Yields the list of lines it received, each of which it answers with `reply`.
+    """
+
+    @contextmanager
+    def _listen(
+        port: int = 8080, host: str = "127.0.0.1", reply: bytes = b"pong\n"
+    ) -> Generator[list[bytes], None, None]:
+        received: list[bytes] = []
+        stop = threading.Event()
+
+        def serve(listener: socket.socket) -> None:
+            while not stop.is_set():
+                try:
+                    conn, _ = listener.accept()
+                except TimeoutError:
+                    continue
+                except OSError:
+                    return
+                with conn:
+                    conn.settimeout(5)
+                    try:
+                        received.append(conn.recv(1024))
+                        conn.sendall(reply)
+                    except OSError:
+                        pass
+
+        family = socket.AF_INET6 if ":" in host else socket.AF_INET
+        with socket.create_server((host, port), family=family) as listener:
+            # A short timeout lets the thread notice `stop`.
+            listener.settimeout(0.2)
+            server = threading.Thread(target=serve, args=(listener,), daemon=True)
+            server.start()
+            try:
+                yield received
+            finally:
+                stop.set()
+                server.join(timeout=10)
+
+    return _listen
+
+
+class Remote:
+    """A host beyond the gateway or device, which records the lines that reach it."""
+
+    def __init__(self, address: str):
+        self.address = address
+
+    def peers(self, endpoint: str, payload: str, wait: float = 0.0) -> list[str]:
+        """
+        Source addresses `payload` arrived from on `endpoint` (e.g. "tcp/443"), waiting
+        up to `wait` seconds for it. Empty if it did not arrive.
+        """
+        deadline = time.monotonic() + wait
+        while True:
+            res = subprocess.run(
+                ["docker", "exec", REMOTE_CONTAINER, "cat", "/received"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            records = [line.split(" ", 2) for line in res.stdout.splitlines()]
+            peers = [r[1] for r in records if [r[0], r[2]] == [endpoint, payload]]
+            if peers or time.monotonic() >= deadline:
+                return peers
+            time.sleep(0.2)
+
+
+@pytest.fixture(scope="session")
+def remote() -> Remote:
+    """The remote container. Skips integration tests if it is not available."""
+    if shutil.which("docker") is None:
+        _unavailable("Docker ('docker') not found locally.")
+    res = subprocess.run(
+        [
+            "docker",
+            "inspect",
+            "-f",
+            "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+            REMOTE_CONTAINER,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    address = res.stdout.strip()
+    if res.returncode != 0 or not address:
+        _unavailable(
+            f"Remote container '{REMOTE_CONTAINER}' is not running. "
+            "Start the test environment with: "
+            "docker compose -f docker-compose.test.yml up -d"
+        )
+    return Remote(address)
+
+
+@pytest.fixture(scope="session")
+def shipped_config(tmp_path_factory) -> Path:
+    """The repository's example config.toml, with its profiles pointed at the test containers."""
+    content = (REPO_ROOT / "config.toml").read_text()
+    for pattern, replacement in (
+        (r'^ssh_host = ".*"$', f'ssh_host = "{VPS_HOST}"'),
+        (r'^ssh_user = ".*"$', f'ssh_user = "{VPS_USER}"'),
+        (r'^# serial = ".*"$', f'serial = "{ADB_SERIAL}"'),
+        (r'^elevation = "su"$', f'elevation = "{ADB_ELEVATION}"'),
+        (r'"com\.example\.app"', f'"{ROOTED_APP}"'),
+    ):
+        content, count = re.subn(pattern, replacement, content, flags=re.MULTILINE)
+        assert count == 1, f"config.toml no longer has exactly one {pattern!r}"
+    config_file = tmp_path_factory.mktemp("shipped") / "config.toml"
+    config_file.write_text(content)
+    return config_file
+
+
+@pytest.fixture(scope="session")
+def device_send(adb_device) -> Callable[..., Sent]:
+    """
+    Helper sending a line from the Android device. It is sent by the ADB shell's
+    uid, or by root with `root=True`.
+    """
+
+    def _send(
+        host: str, port: int, udp: bool = False, root: bool = False, timeout: int = 5
+    ) -> Sent:
+        payload = uuid.uuid4().hex
+        flags = ("-6 " if ":" in host else "") + ("-u " if udp else "")
+        # nc exits on stdin EOF, keep it open until the reply made it back.
+        cmd = (
+            f"(echo {payload}; sleep 1) | "
+            f"timeout {timeout} nc {flags}-w {timeout} {host} {port}"
+        )
+        res = _device_exec(cmd, check=False, root=root)
+        return Sent(payload, res.returncode, res.stdout)
+
+    return _send
+
+
+class WireguardClient:
+    """A WireGuard client of the gateway, routing all of its traffic through the tunnel."""
+
+    def __init__(self, vps_exec):
+        self._vps_exec = vps_exec
+
+    def wait_for_handshake(self, timeout: float = 30.0) -> None:
+        """Blocks until the client completed a handshake with the gateway."""
+        iface = wireguard_ssh_reverse.WG_IFACE
+        # The client retries its handshake every 5 seconds until the gateway is up.
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            res = self._vps_exec(f"wg show {iface} latest-handshakes", check=False)
+            fields = res.stdout.split()
+            if len(fields) == 2 and fields[1] != "0":
+                return
+            time.sleep(0.5)
+        raise RuntimeError(
+            f"No WireGuard handshake from the client within {timeout}s:\n"
+            + self._vps_exec(f"wg show {iface}", check=False).stdout
+        )
+
+    def send(self, host: str, port: int, udp: bool = False, timeout: int = 5) -> Sent:
+        """
+        Sends a line from the client. Over TCP, `reply` is the first line of the
+        answer and `returncode` is 124 if the connection timed out.
+        """
+        self.wait_for_handshake()
+        payload = uuid.uuid4().hex
+        # The VPS has no nc, bash connects on its own.
+        if udp:
+            script = f"echo {payload} > /dev/udp/{host}/{port}"
+        else:
+            script = (
+                f"exec 3<>/dev/tcp/{host}/{port} && echo {payload} >&3 "
+                "&& head -n 1 <&3"
+            )
+        res = self._vps_exec(
+            f"timeout {timeout} ip netns exec {CLIENT_NETNS} "
+            f"bash -c {shlex.quote(script)}",
+            check=False,
+        )
+        return Sent(payload, res.returncode, res.stdout)
+
+
+def _remove_wg_client(vps_exec) -> None:
+    # Deleting the namespace also removes the interface in it.
+    vps_exec(f"ip netns del {CLIENT_NETNS}", check=False)
+    vps_exec(f"ip link del {CLIENT_WG_IFACE}", check=False)
+
+
+@pytest.fixture(scope="session")
+def wg_client(vps_exec):
+    """
+    Factory for a WireGuard client connected with a client config from `netlane pair`.
+
+    The client is a network namespace on the VPS itself, so its packets reach the
+    gateway's WireGuard port over the loopback interface. Everything behind that
+    port is the same as for a remote client.
+    """
+
+    @contextmanager
+    def _connect(client_conf: str) -> Generator[WireguardClient, None, None]:
+        addresses: list[str] = []
+        setconf: list[str] = []
+        for line in client_conf.splitlines():
+            key, _, value = (part.strip() for part in line.partition("="))
+            if key == "Address":
+                addresses = [address.strip() for address in value.split(",")]
+            elif key == "Endpoint":
+                setconf.append(f"Endpoint = 127.0.0.1:{value.rpartition(':')[2]}")
+            elif key != "DNS":
+                # Address and DNS are wg-quick's, `wg setconf` rejects them.
+                setconf.append(line)
+
+        netns, iface = CLIENT_NETNS, CLIENT_WG_IFACE
+        script = [
+            "set -e",
+            f"ip netns add {netns}",
+            # An interface keeps sending from the namespace it was created in,
+            # which is how the client reaches the gateway's port.
+            f"ip link add {iface} type wireguard",
+            f"wg setconf {iface} /dev/stdin <<'EOF'",
+            *setconf,
+            "EOF",
+            f"ip link set {iface} netns {netns}",
+            # nodad: an IPv6 address is not usable while its duplicate detection runs.
+            *(f"ip -n {netns} addr add {a} dev {iface} nodad" for a in addresses),
+            f"ip -n {netns} link set lo up",
+            f"ip -n {netns} link set {iface} up",
+            f"ip -n {netns} -4 route add default dev {iface}",
+            f"ip -n {netns} -6 route add default dev {iface}",
+        ]
+        _remove_wg_client(vps_exec)
+        try:
+            vps_exec(f"bash -c {shlex.quote(chr(10).join(script))}")
+            yield WireguardClient(vps_exec)
+        finally:
+            _remove_wg_client(vps_exec)
+
+    return _connect
+
+
+@pytest.fixture
+def paired_client(
+    netlane: NetlaneRunner, tmp_path, wg_client
+) -> Generator[WireguardClient, None, None]:
+    """Pairs the profile and connects a WireGuard client with its client config."""
+    client_conf_path = tmp_path / "paired_client.conf"
+    netlane.pair("jailed", save_path=client_conf_path, force=True)
+    with wg_client(client_conf_path.read_text()) as client:
+        yield client

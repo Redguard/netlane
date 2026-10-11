@@ -114,9 +114,10 @@ netlane/
     ├── integration/                # Integration tests requiring container/service environments
     │   ├── conftest.py             # SSH config, fixtures, and NetlaneRunner for container testing
     │   ├── docker/                 # Container definitions for integration testing
-    │   ├── test_setup.py           # Integration tests for VPS setup and verification
-    │   ├── test_wireguard_ssh_reverse.py # Integration tests for wireguard_ssh_reverse against the VPS container
-    │   └── test_adb_reverse.py     # Integration tests for adb_reverse against the Redroid container
+    │   ├── test_wireguard_ssh_reverse.py # Generic wireguard_ssh_reverse tests (setup, pair, up, down, rule targets) against the VPS container
+    │   ├── test_adb_reverse.py     # Generic adb_reverse tests (up, down, rule targets) against the Redroid container
+    │   ├── test_profile_jailed.py  # config.toml's jailed profile, with traffic of a WireGuard client
+    │   └── test_profile_rooted.py  # config.toml's rooted profile, with traffic of the Android device
     ├── resources/                  # Shared TOML test fixtures (full_example.toml, etc.)
     └── unit/                       # Unit & mock step tests
         ├── test_adb.py             # Tests for adb helper wrappers
@@ -310,14 +311,21 @@ Integration tests run against live containerized environments defined in `docker
    - Runs Ubuntu 26.04 with systemd, OpenSSH server, and WireGuard.
    - Ships without any authorized SSH key. Each test session generates a throwaway key pair and the `vps_server` fixture installs its public half with `docker exec` (container name overridable via `NETLANE_TEST_VPS_CONTAINER`), so the tests need the `docker` CLI.
    - Automatically detected by `tests/integration/conftest.py` on `127.0.0.1` or `host.docker.internal` (for Dev Containers).
-2. **Setup and Verification**:
-   - Tests in `tests/integration/test_setup.py` run full bootstrapping scripts against the live VPS container and assert on installed firewall rules, WireGuard status, and file permissions.
-3. **Android Container (`redroid` service)**:
+2. **Android Container (`redroid` service)**:
    - Runs Redroid (Android 14) with ADB exposed on port `5555`. Its shell is unprivileged, so the tests use `elevation = "su"`.
    - The `adb_device` fixture connects ADB and waits for boot, `device_exec` runs root commands on the device for assertions, and `netlane_adb` provides a `NetlaneRunner` for the `rooted` profile.
-   - Tests in `tests/integration/test_adb_reverse.py` assert on the installed `iptables` / `ip6tables` chains and `adb reverse` tunnels, and send traffic from the device through a tunnel to a local listener.
-4. **Reserved Ports**:
-   - Local ports `8080-8090` are reserved for integration test tunnels and listeners. Bind listeners to `127.0.0.1` only; `.devcontainer/devcontainer.json` excludes this range from VS Code auto-forwarding so they stay inside the Dev Container.
+   - `device_send` sends a line from the device, as the ADB shell's uid or as root.
+3. **Remote Container (`tests/integration/docker/remote/Dockerfile`)**:
+   - Stands in for a host on the internet beyond the gateway or device. It answers on a few TCP and UDP ports and records what reached them, with the sender's address.
+   - The `remote` fixture provides its address and `Remote.peers`, which tells whether a sent line arrived. Rules that reject, drop or pass traffic through can only be verified against it, so assert on it instead of on a client's exit code alone.
+4. **WireGuard Client (`wg_client` fixture)**:
+   - The WireGuard client itself is out of scope, the tests only cover the gateway and its routing. `wg_client` therefore brings up a client config from `netlane pair` in a network namespace on the VPS container, which reaches the gateway's WireGuard port over the loopback interface. `paired_client` pairs the `jailed` profile and connects such a client.
+   - `local_listener` stands in for the analyst's proxy on a local tunnel port. `WireguardClient.send` and `device_send` return a `Sent` with a unique payload to look for in the listener's and the remote's records.
+5. **Test Files**:
+   - `test_wireguard_ssh_reverse.py` and `test_adb_reverse.py` are the generic tests of a mode: its steps, lifecycle, refusals, hooks, and every rule target with real traffic. They define their own small profiles.
+   - `test_profile_jailed.py` and `test_profile_rooted.py` test the profiles of the repository's `config.toml` as shipped. The `shipped_config` fixture only replaces environment values in it (SSH host and user, ADB serial and elevation, and the placeholder app with the ADB shell's package), and fails if `config.toml` no longer contains them. Each file brings its profile up once per module and sends traffic for every rule. When a profile in `config.toml` changes, update these tests with it.
+6. **Reserved Ports**:
+   - Local ports `8080-8090` are reserved for integration test tunnels and listeners. Bind listeners to the loopback addresses (`127.0.0.1`, `::1`) only; `.devcontainer/devcontainer.json` excludes this range from VS Code auto-forwarding so they stay inside the Dev Container.
 
 
 ---
