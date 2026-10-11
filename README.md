@@ -232,28 +232,4 @@ For debugging, `-v` before the command shows executed commands and `--log <path>
 
 ## Development
 
-```bash
-uv sync
-uv run black .
-uv run pyright
-
-# Run unit tests
-uv run pytest tests/unit
-
-# Run integration tests (requires test containers)
-export BINDER_MAJOR=$(awk '$2=="binder"{print $1}' /proc/devices)
-docker compose -f docker-compose.test.yml up -d
-uv run pytest tests/integration
-docker compose -f docker-compose.test.yml down
-```
-
-> [!NOTE]
-> The `adb_reverse` integration tests run against a [Redroid](https://github.com/remote-android/redroid-doc) container, which needs these kernel modules loaded on the Docker host:
->
-> ```bash
-> sudo modprobe binder_linux devices=binder,hwbinder,vndbinder
-> sudo modprobe -a iptable_filter iptable_nat ip6table_filter ip6table_nat xt_owner xt_comment ipt_REJECT ip6t_REJECT
-> ```
->
-> The container is not privileged. `BINDER_MAJOR` grants it access to the binder devices only, so it has to be set for every `docker compose` command on this file.
-
+See [docs/development.md](docs/development.md) for the development setup and how the unit and integration tests work.

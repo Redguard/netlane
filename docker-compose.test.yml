@@ -47,6 +47,22 @@ services:
     networks:
       - netlane-test
 
+  client:
+    # A WireGuard client of the gateway, standing in for the mobile device.
+    build:
+      context: tests/integration/docker/client
+    container_name: netlane-client
+    init: true
+    cap_add:
+      # Creates the WireGuard interface and routes its traffic into it.
+      - NET_ADMIN
+    sysctls:
+      # The tunnel is dual-stack, Docker disables IPv6 on networks without it.
+      - net.ipv6.conf.all.disable_ipv6=0
+      - net.ipv6.conf.default.disable_ipv6=0
+    networks:
+      - netlane-test
+
   remote:
     # A host on the "internet" beyond the gateway or device, recording what reaches it.
     build:

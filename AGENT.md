@@ -318,8 +318,8 @@ Integration tests run against live containerized environments defined in `docker
 3. **Remote Container (`tests/integration/docker/remote/Dockerfile`)**:
    - Stands in for a host on the internet beyond the gateway or device. It answers on a few TCP and UDP ports and records what reached them, with the sender's address.
    - The `remote` fixture provides its address and `Remote.peers`, which tells whether a sent line arrived. Rules that reject, drop or pass traffic through can only be verified against it, so assert on it instead of on a client's exit code alone.
-4. **WireGuard Client (`wg_client` fixture)**:
-   - The WireGuard client itself is out of scope, the tests only cover the gateway and its routing. `wg_client` therefore brings up a client config from `netlane pair` in a network namespace on the VPS container, which reaches the gateway's WireGuard port over the loopback interface. `paired_client` pairs the `jailed` profile and connects such a client.
+4. **WireGuard Client Container (`tests/integration/docker/client/Dockerfile`)**:
+   - Stands in for the mobile device with the WireGuard app. The `wg_client` fixture brings up a client config from `netlane pair` in it with `docker exec` (container name overridable via `NETLANE_TEST_CLIENT_CONTAINER`). The client reaches the gateway's WireGuard port over the test network and routes everything else through the tunnel, the test network included. `paired_client` pairs the `jailed` profile and connects such a client.
    - `local_listener` stands in for the analyst's proxy on a local tunnel port. `WireguardClient.send` and `device_send` return a `Sent` with a unique payload to look for in the listener's and the remote's records.
 5. **Test Files**:
    - `test_wireguard_ssh_reverse.py` and `test_adb_reverse.py` are the generic tests of a mode: its steps, lifecycle, refusals, hooks, and every rule target with real traffic. They define their own small profiles.

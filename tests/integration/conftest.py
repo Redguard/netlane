@@ -74,9 +74,11 @@ ADB_SERIAL = f"{ADB_HOST}:{ADB_PORT}"
 # Redroid's adbd runs as the shell user and ships su. Set to "" for a device with root adbd.
 ADB_ELEVATION = os.environ.get("NETLANE_TEST_ADB_ELEVATION", "su")
 
-# The WireGuard client of the `wg_client` fixture, a network namespace on the VPS.
-CLIENT_NETNS = "netlane-client"
+# The WireGuard client of the `wg_client` fixture, a container beyond the gateway.
+CLIENT_CONTAINER = os.environ.get("NETLANE_TEST_CLIENT_CONTAINER", "netlane-client")
 CLIENT_WG_IFACE = "wgclient"
+# Routing table holding the client's default routes into the tunnel.
+CLIENT_ROUTE_TABLE = 51820
 
 REMOTE_CONTAINER = os.environ.get("NETLANE_TEST_REMOTE_CONTAINER", "netlane-remote")
 
@@ -741,9 +743,8 @@ class Remote:
             time.sleep(0.2)
 
 
-@pytest.fixture(scope="session")
-def remote() -> Remote:
-    """The remote container. Skips integration tests if it is not available."""
+def _container_address(container: str, role: str) -> str:
+    """Address of a test container on the test network. Skips the test if it is not running."""
     if shutil.which("docker") is None:
         _unavailable("Docker ('docker') not found locally.")
     res = subprocess.run(
@@ -752,7 +753,7 @@ def remote() -> Remote:
             "inspect",
             "-f",
             "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
-            REMOTE_CONTAINER,
+            container,
         ],
         capture_output=True,
         text=True,
@@ -760,11 +761,17 @@ def remote() -> Remote:
     address = res.stdout.strip()
     if res.returncode != 0 or not address:
         _unavailable(
-            f"Remote container '{REMOTE_CONTAINER}' is not running. "
+            f"{role} container '{container}' is not running. "
             "Start the test environment with: "
             "docker compose -f docker-compose.test.yml up -d"
         )
-    return Remote(address)
+    return address
+
+
+@pytest.fixture(scope="session")
+def remote() -> Remote:
+    """The remote container. Skips integration tests if it is not available."""
+    return Remote(_container_address(REMOTE_CONTAINER, "Remote"))
 
 
 @pytest.fixture(scope="session")
@@ -837,7 +844,7 @@ class WireguardClient:
         """
         self.wait_for_handshake()
         payload = uuid.uuid4().hex
-        # The VPS has no nc, bash connects on its own.
+        # bash connects on its own, so the client needs no nc.
         if udp:
             script = f"echo {payload} > /dev/udp/{host}/{port}"
         else:
@@ -845,18 +852,25 @@ class WireguardClient:
                 f"exec 3<>/dev/tcp/{host}/{port} && echo {payload} >&3 "
                 "&& head -n 1 <&3"
             )
-        res = self._vps_exec(
-            f"timeout {timeout} ip netns exec {CLIENT_NETNS} "
-            f"bash -c {shlex.quote(script)}",
-            check=False,
-        )
+        res = _client_exec(f"timeout {timeout} bash -c {shlex.quote(script)}")
         return Sent(payload, res.returncode, res.stdout)
 
 
-def _remove_wg_client(vps_exec) -> None:
-    # Deleting the namespace also removes the interface in it.
-    vps_exec(f"ip netns del {CLIENT_NETNS}", check=False)
-    vps_exec(f"ip link del {CLIENT_WG_IFACE}", check=False)
+def _client_exec(script: str, check: bool = False) -> subprocess.CompletedProcess:
+    """Runs a script in the WireGuard client container."""
+    return subprocess.run(
+        ["docker", "exec", CLIENT_CONTAINER, "bash", "-c", script],
+        capture_output=True,
+        text=True,
+        check=check,
+    )
+
+
+def _remove_wg_client() -> None:
+    # Deleting the interface also removes the routes into it.
+    _client_exec(f"ip link del {CLIENT_WG_IFACE}")
+    for family in ("-4", "-6"):
+        _client_exec(f"ip {family} rule del table {CLIENT_ROUTE_TABLE}")
 
 
 @pytest.fixture(scope="session")
@@ -864,10 +878,14 @@ def wg_client(vps_exec):
     """
     Factory for a WireGuard client connected with a client config from `netlane pair`.
 
-    The client is a network namespace on the VPS itself, so its packets reach the
-    gateway's WireGuard port over the loopback interface. Everything behind that
-    port is the same as for a remote client.
+    The client is a container of its own, standing in for the mobile device. It
+    reaches the gateway's WireGuard port over the network and routes everything
+    else through the tunnel, as the WireGuard app does with `AllowedIPs` of all.
     """
+    _container_address(CLIENT_CONTAINER, "WireGuard client")
+    # The client config has the address the tests reach the VPS on, which is a
+    # published port. The client is on the VPS's network and uses it directly.
+    gateway = _container_address(VPS_CONTAINER, "VPS")
 
     @contextmanager
     def _connect(client_conf: str) -> Generator[WireguardClient, None, None]:
@@ -878,35 +896,34 @@ def wg_client(vps_exec):
             if key == "Address":
                 addresses = [address.strip() for address in value.split(",")]
             elif key == "Endpoint":
-                setconf.append(f"Endpoint = 127.0.0.1:{value.rpartition(':')[2]}")
+                setconf.append(f"Endpoint = {gateway}:{value.rpartition(':')[2]}")
             elif key != "DNS":
                 # Address and DNS are wg-quick's, `wg setconf` rejects them.
                 setconf.append(line)
 
-        netns, iface = CLIENT_NETNS, CLIENT_WG_IFACE
+        iface, table = CLIENT_WG_IFACE, CLIENT_ROUTE_TABLE
         script = [
             "set -e",
-            f"ip netns add {netns}",
-            # An interface keeps sending from the namespace it was created in,
-            # which is how the client reaches the gateway's port.
             f"ip link add {iface} type wireguard",
             f"wg setconf {iface} /dev/stdin <<'EOF'",
             *setconf,
             "EOF",
-            f"ip link set {iface} netns {netns}",
             # nodad: an IPv6 address is not usable while its duplicate detection runs.
-            *(f"ip -n {netns} addr add {a} dev {iface} nodad" for a in addresses),
-            f"ip -n {netns} link set lo up",
-            f"ip -n {netns} link set {iface} up",
-            f"ip -n {netns} -4 route add default dev {iface}",
-            f"ip -n {netns} -6 route add default dev {iface}",
+            *(f"ip addr add {a} dev {iface} nodad" for a in addresses),
+            f"ip link set {iface} up",
+            # All traffic enters the tunnel, except the tunnel's own packets to the
+            # gateway. This includes the test network, which the client is on as well.
+            f"ip -4 route add default dev {iface} table {table}",
+            f"ip -6 route add default dev {iface} table {table}",
+            f"ip -4 rule add not to {gateway} table {table}",
+            f"ip -6 rule add table {table}",
         ]
-        _remove_wg_client(vps_exec)
+        _remove_wg_client()
         try:
-            vps_exec(f"bash -c {shlex.quote(chr(10).join(script))}")
+            _client_exec("\n".join(script), check=True)
             yield WireguardClient(vps_exec)
         finally:
-            _remove_wg_client(vps_exec)
+            _remove_wg_client()
 
     return _connect
 
