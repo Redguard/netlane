@@ -158,7 +158,8 @@ uv run pytest tests/unit -k "test_up"
 ```
 Run integration tests (requires container environment from `docker-compose.test.yml`):
 ```bash
-# Start test containers
+# Start test containers (BINDER_MAJOR is required by every compose command on this file)
+export BINDER_MAJOR=$(awk '$2=="binder"{print $1}' /proc/devices)
 docker compose -f docker-compose.test.yml up -d
 
 # Run integration tests
@@ -169,7 +170,7 @@ docker compose -f docker-compose.test.yml down
 ```
 
 > **Note on Architecture & Dev Containers**:
-> - The integration test VPS container (`tests/integration/docker/vps/Dockerfile`) is built from `ubuntu:24.04` with systemd enabled natively on both `amd64` and `arm64`.
+> - The integration test VPS container (`tests/integration/docker/vps/Dockerfile`) is built from `ubuntu:26.04` with systemd enabled natively on both `amd64` and `arm64`.
 > - When running inside a VS Code Dev Container, port `2222` is exposed on the host machine. `tests/integration/conftest.py` automatically detects and uses `host.docker.internal` when `127.0.0.1` is unreachable.
 > - You can explicitly set the target VPS host via `NETLANE_TEST_VPS_HOST` (e.g. `NETLANE_TEST_VPS_HOST=127.0.0.1` or `host.docker.internal`).
 > - The `adb_reverse` tests run against the `redroid` container, which shares the Docker host's kernel. The host needs binder and the legacy iptables tables, otherwise the container does not boot or `iptables-restore` fails:
@@ -177,6 +178,7 @@ docker compose -f docker-compose.test.yml down
 >   sudo modprobe binder_linux devices=binder,hwbinder,vndbinder
 >   sudo modprobe -a iptable_filter iptable_nat ip6table_filter ip6table_nat xt_owner xt_comment ipt_REJECT ip6t_REJECT
 >   ```
+> - The `redroid` container is deliberately not `privileged`: its device cgroup only allows the binder major (`BINDER_MAJOR`), so it cannot create loop devices or reach other host devices. Keep it on an image with flattened APEX modules (up to `14.0.0`); newer ones need loop devices and do not boot under this restriction.
 > - The device is reached over ADB on port `5555`. Override with `NETLANE_TEST_ADB_HOST`, `NETLANE_TEST_ADB_PORT`, and `NETLANE_TEST_ADB_ELEVATION` (default `su`).
 > - Tests of a mode skip when its container is not reachable. Set `NETLANE_TEST_REQUIRE_SERVICES=1` (as CI does) to fail instead.
 
@@ -305,13 +307,13 @@ Unit tests use `pytest` and execute in milliseconds without requiring real Andro
 ### Integration Testing Conventions (`tests/integration/`)
 Integration tests run against live containerized environments defined in `docker-compose.test.yml`:
 1. **VPS Container (`tests/integration/docker/vps/Dockerfile`)**:
-   - Runs Ubuntu 24.04 with systemd, OpenSSH server, and WireGuard.
+   - Runs Ubuntu 26.04 with systemd, OpenSSH server, and WireGuard.
    - Ships without any authorized SSH key. Each test session generates a throwaway key pair and the `vps_server` fixture installs its public half with `docker exec` (container name overridable via `NETLANE_TEST_VPS_CONTAINER`), so the tests need the `docker` CLI.
    - Automatically detected by `tests/integration/conftest.py` on `127.0.0.1` or `host.docker.internal` (for Dev Containers).
 2. **Setup and Verification**:
    - Tests in `tests/integration/test_setup.py` run full bootstrapping scripts against the live VPS container and assert on installed firewall rules, WireGuard status, and file permissions.
 3. **Android Container (`redroid` service)**:
-   - Runs Redroid (Android 11) with ADB exposed on port `5555`. Its shell is unprivileged, so the tests use `elevation = "su"`.
+   - Runs Redroid (Android 14) with ADB exposed on port `5555`. Its shell is unprivileged, so the tests use `elevation = "su"`.
    - The `adb_device` fixture connects ADB and waits for boot, `device_exec` runs root commands on the device for assertions, and `netlane_adb` provides a `NetlaneRunner` for the `rooted` profile.
    - Tests in `tests/integration/test_adb_reverse.py` assert on the installed `iptables` / `ip6tables` chains and `adb reverse` tunnels, and send traffic from the device through a tunnel to a local listener.
 4. **Reserved Ports**:

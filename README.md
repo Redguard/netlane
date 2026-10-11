@@ -241,6 +241,7 @@ uv run pyright
 uv run pytest tests/unit
 
 # Run integration tests (requires test containers)
+export BINDER_MAJOR=$(awk '$2=="binder"{print $1}' /proc/devices)
 docker compose -f docker-compose.test.yml up -d
 uv run pytest tests/integration
 docker compose -f docker-compose.test.yml down
@@ -253,4 +254,6 @@ docker compose -f docker-compose.test.yml down
 > sudo modprobe binder_linux devices=binder,hwbinder,vndbinder
 > sudo modprobe -a iptable_filter iptable_nat ip6table_filter ip6table_nat xt_owner xt_comment ipt_REJECT ip6t_REJECT
 > ```
+>
+> The container is not privileged. `BINDER_MAJOR` grants it access to the binder devices only, so it has to be set for every `docker compose` command on this file.
 

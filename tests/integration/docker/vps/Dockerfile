@@ -1,4 +1,4 @@
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 # Avoid interactive prompts during apt operations
 ENV DEBIAN_FRONTEND=noninteractive
@@ -24,7 +24,7 @@ RUN cd /lib/systemd/system/sysinit.target.wants/ && rm -f $(ls | grep -v systemd
           /lib/systemd/system/basic.target.wants/* \
           /lib/systemd/system/systemd-update-utmp*
 
-# Configure test user 'ubuntu' with passwordless sudo (user 'ubuntu' exists by default in ubuntu 24.04)
+# Configure test user 'ubuntu' with passwordless sudo (user 'ubuntu' exists by default in ubuntu 26.04)
 RUN if ! id -u ubuntu >/dev/null 2>&1; then \
         useradd -rm -d /home/ubuntu -s /bin/bash -g root -G sudo -u 1000 ubuntu; \
     else \

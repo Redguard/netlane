@@ -21,7 +21,7 @@ jobs:
   build:
     name: Build & Smoke Test Package
     needs: ci
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -55,7 +55,7 @@ jobs:
     name: Publish (stub)
     needs: build
     if: github.event_name == 'push'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       # TODO: publish the built distributions (e.g. PyPI Trusted Publishing).
       - name: Publishing is not implemented yet

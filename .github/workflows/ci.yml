@@ -19,7 +19,7 @@ permissions:
 jobs:
   lint:
     name: Lint (Black & Pyright)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -41,7 +41,7 @@ jobs:
 
   unit:
     name: Unit Tests (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
@@ -49,6 +49,7 @@ jobs:
           - "3.12"
           - "3.13"
           - "3.14"
+          - "3.15"
 
     steps:
       - name: Checkout repository
@@ -68,7 +69,7 @@ jobs:
 
   integration:
     name: Integration Tests
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     env:
       # A missing container must fail the job instead of skipping its tests.
       NETLANE_TEST_REQUIRE_SERVICES: "1"
@@ -94,6 +95,8 @@ jobs:
           # The containers share the runner's kernel and cannot load modules themselves.
           # redroid needs binder to boot and the legacy iptables tables for netlane's rules.
           sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"
+          # The redroid container is only granted the binder devices (dynamic major).
+          echo "BINDER_MAJOR=$(awk '$2=="binder"{print $1}' /proc/devices)" >> "$GITHUB_ENV"
           sudo modprobe -a iptable_filter iptable_nat ip6table_filter ip6table_nat \
             xt_owner xt_comment ipt_REJECT ip6t_REJECT
           # The VPS needs WireGuard and the nftables expressions netlane uses.

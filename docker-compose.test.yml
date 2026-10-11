@@ -16,9 +16,30 @@ services:
       - netlane-test
 
   redroid:
-    image: redroid/redroid:11.0.0-latest
+    # Newest redroid with flattened APEX modules. From 15.0.0 on, apexd attaches
+    # every module to a loop device, which lives in the shared host kernel.
+    image: redroid/redroid:14.0.0-latest
     container_name: netlane-redroid
-    privileged: true
+    # Not privileged: the only host devices the container may touch are binder
+    # nodes, so it cannot create loop devices or reach host disks.
+    cap_add:
+      - ALL
+    cap_drop:
+      - SYS_MODULE
+      - SYS_RAWIO
+      - SYS_BOOT
+      - SYS_TIME
+      - MAC_ADMIN
+      - MAC_OVERRIDE
+    security_opt:
+      # Android init mounts its own filesystems (binderfs, tmpfs, ...).
+      - apparmor=unconfined
+    device_cgroup_rules:
+      # binderfs gets a dynamic major: awk '$$2=="binder"{print $$1}' /proc/devices
+      - "c ${BINDER_MAJOR:?set BINDER_MAJOR to the binder major from /proc/devices}:* rwm"
+    tmpfs:
+      # Docker's read-only /sys makes init abort; it mounts its own sysfs here.
+      - /sys
     ports:
       - "5555:5555"
     networks:
