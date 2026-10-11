@@ -86,12 +86,19 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
-      - name: Install local tools (wg, adb) and the binder module for redroid
+      - name: Install local tools (wg, adb) and kernel modules for the containers
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             wireguard-tools adb "linux-modules-extra-$(uname -r)"
+          # The containers share the runner's kernel and cannot load modules themselves.
+          # redroid needs binder to boot and the legacy iptables tables for netlane's rules.
           sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"
+          sudo modprobe -a iptable_filter iptable_nat ip6table_filter ip6table_nat \
+            xt_owner xt_comment ipt_REJECT ip6t_REJECT
+          # The VPS needs WireGuard and the nftables expressions netlane uses.
+          sudo modprobe -a wireguard nf_tables nft_ct nft_chain_nat nft_nat nft_masq \
+            nft_reject_inet
 
       - name: Start test containers
         run: docker compose -f docker-compose.test.yml up -d --build
