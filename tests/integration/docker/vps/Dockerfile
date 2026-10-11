@@ -32,14 +32,11 @@ RUN if ! id -u ubuntu >/dev/null 2>&1; then \
     fi && \
     echo 'ubuntu ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 
-# Configure SSH for key-based authentication
+# Configure SSH for key-based authentication. The test session installs its own
+# public key into authorized_keys (see tests/integration/conftest.py).
 RUN mkdir -p /home/ubuntu/.ssh /var/run/sshd && \
     chmod 700 /home/ubuntu/.ssh && \
     chown -R ubuntu:ubuntu /home/ubuntu/.ssh
-
-COPY tests/integration/keys/id_ed25519.pub /home/ubuntu/.ssh/authorized_keys
-RUN chmod 600 /home/ubuntu/.ssh/authorized_keys && \
-    chown ubuntu:ubuntu /home/ubuntu/.ssh/authorized_keys
 
 # Prevent pam_nologin from blocking non-root SSH logins during container startup
 RUN sed -i '/pam_nologin.so/d' /etc/pam.d/sshd

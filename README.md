@@ -246,6 +246,11 @@ uv run pytest tests/integration
 docker compose -f docker-compose.test.yml down
 ```
 
-> [!TIP]
-> When running inside a VS Code Dev Container, integration tests automatically detect and connect to the VPS container via `host.docker.internal`. You can override the host with `NETLANE_TEST_VPS_HOST` if needed.
+> [!NOTE]
+> The `adb_reverse` integration tests run against a [Redroid](https://github.com/remote-android/redroid-doc) container, which needs these kernel modules loaded on the Docker host:
+>
+> ```bash
+> sudo modprobe binder_linux devices=binder,hwbinder,vndbinder
+> sudo modprobe -a iptable_filter iptable_nat ip6table_filter ip6table_nat xt_owner xt_comment ipt_REJECT ip6t_REJECT
+> ```
 

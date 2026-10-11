@@ -1,10 +1,13 @@
 import os
+import queue
+import shlex
 import shutil
 import signal
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -17,7 +20,6 @@ from netlane.modes import wireguard_ssh_reverse
 
 TESTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_DIR.parent.parent
-KEY_PATH = TESTS_DIR / "keys" / "id_ed25519"
 
 
 def is_port_open(host: str, port: int, timeout: float = 1.0) -> bool:
@@ -44,9 +46,10 @@ def _get_default_gateway() -> Optional[str]:
     return None
 
 
-def _detect_vps_host(port: int) -> str:
-    if "NETLANE_TEST_VPS_HOST" in os.environ:
-        return os.environ["NETLANE_TEST_VPS_HOST"]
+def _detect_host(env_var: str, port: int) -> str:
+    """Finds the address a test container's published `port` is reachable on."""
+    if env_var in os.environ:
+        return os.environ[env_var]
     if is_port_open("127.0.0.1", port, timeout=0.5):
         return "127.0.0.1"
     if is_port_open("host.docker.internal", port, timeout=0.5):
@@ -58,27 +61,73 @@ def _detect_vps_host(port: int) -> str:
 
 
 VPS_PORT = int(os.environ.get("NETLANE_TEST_VPS_PORT", "2222"))
-VPS_HOST = _detect_vps_host(VPS_PORT)
+VPS_HOST = _detect_host("NETLANE_TEST_VPS_HOST", VPS_PORT)
 VPS_USER = os.environ.get("NETLANE_TEST_VPS_USER", "ubuntu")
+VPS_CONTAINER = os.environ.get("NETLANE_TEST_VPS_CONTAINER", "netlane-vps")
+
+ADB_PORT = int(os.environ.get("NETLANE_TEST_ADB_PORT", "5555"))
+ADB_HOST = _detect_host("NETLANE_TEST_ADB_HOST", ADB_PORT)
+ADB_SERIAL = f"{ADB_HOST}:{ADB_PORT}"
+# Redroid's adbd runs as the shell user and ships su. Set to "" for a device with root adbd.
+ADB_ELEVATION = os.environ.get("NETLANE_TEST_ADB_ELEVATION", "su")
+
+
+def _authorize_test_key(public_key: str) -> Optional[str]:
+    """Installs the session's public key in the VPS container. Returns an error message on failure."""
+    if shutil.which("docker") is None:
+        return "Docker ('docker') not found locally."
+    res = subprocess.run(
+        [
+            "docker",
+            "exec",
+            "-i",
+            "-u",
+            VPS_USER,
+            VPS_CONTAINER,
+            "sh",
+            "-c",
+            "umask 077 && mkdir -p ~/.ssh && cat > ~/.ssh/authorized_keys",
+        ],
+        input=public_key,
+        capture_output=True,
+        text=True,
+    )
+    return res.stderr.strip() if res.returncode != 0 else None
 
 
 @pytest.fixture(scope="session", autouse=True)
-def configure_ssh():
-    """Configures ~/.ssh/config so ssh/scp transparently use test keys and ports."""
+def configure_ssh(tmp_path_factory):
+    """
+    Configures ~/.ssh/config so ssh/scp transparently use test keys and ports.
+    Yields the public half of a key pair generated for this test session.
+    """
     ssh_dir = Path.home() / ".ssh"
     ssh_dir.mkdir(parents=True, exist_ok=True)
     config_file = ssh_dir / "config"
 
-    # Ensure correct permissions on the test private key
-    if KEY_PATH.exists():
-        KEY_PATH.chmod(0o600)
+    key_path = tmp_path_factory.mktemp("keys") / "id_ed25519"
+    subprocess.run(
+        [
+            "ssh-keygen",
+            "-q",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-C",
+            "netlane-test",
+            "-f",
+            str(key_path),
+        ],
+        check=True,
+    )
 
     marker = "# --- NETLANE TEST CONFIG ---"
     block = f"""{marker}
 Host {VPS_HOST} netlane-vps
     Port {VPS_PORT}
     User {VPS_USER}
-    IdentityFile {KEY_PATH}
+    IdentityFile {key_path}
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
     LogLevel ERROR
@@ -97,7 +146,7 @@ Host {VPS_HOST} netlane-vps
     config_file.write_text(new_content)
     config_file.chmod(0o600)
 
-    yield
+    yield key_path.with_suffix(".pub").read_text()
 
     # Clean up marker on teardown if desired
     if config_file.exists():
@@ -121,6 +170,8 @@ def vps_server(configure_ssh):
             "Start the test environment with: docker compose -f docker-compose.test.yml up -d"
         )
 
+    authorize_error = _authorize_test_key(configure_ssh)
+
     # Verify SSH connection works
     ssh_cmd = [
         "ssh",
@@ -133,9 +184,10 @@ def vps_server(configure_ssh):
     ]
     res = subprocess.run(ssh_cmd, capture_output=True, text=True)
     if res.returncode != 0:
-        pytest.skip(
-            f"SSH connection to {VPS_USER}@{VPS_HOST}:{VPS_PORT} failed: {res.stderr.strip()}"
-        )
+        reason = f"SSH connection to {VPS_USER}@{VPS_HOST}:{VPS_PORT} failed: {res.stderr.strip()}"
+        if authorize_error:
+            reason += f" (could not install the test key in container '{VPS_CONTAINER}': {authorize_error})"
+        pytest.skip(reason)
 
     return {"host": VPS_HOST, "port": VPS_PORT, "user": VPS_USER}
 
@@ -254,9 +306,15 @@ class NetlaneRunner:
 
     @contextmanager
     def up(
-        self, profile: str, ready_timeout: float = 15.0
+        self, profile: str, ready_timeout: float = 15.0, exit_timeout: float = 20.0
     ) -> Generator[subprocess.Popen, None, None]:
-        """Runs `netlane up` as a background process until context exit."""
+        """
+        Runs `netlane up` as a background process and interrupts it on context exit.
+
+        Leaving the context sends Ctrl-C and requires `up` to tear down on its own
+        and exit cleanly. `netlane down` only runs as a fallback when something
+        failed, so that a broken teardown is not hidden and later tests start clean.
+        """
         cmd = [
             "uv",
             "run",
@@ -272,56 +330,90 @@ class NetlaneRunner:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            preexec_fn=os.setsid,
+            start_new_session=True,
         )
-        try:
-            start_time = time.time()
-            output_lines = []
-            ready = False
-            while time.time() - start_time < ready_timeout:
-                if proc.poll() is not None:
-                    break
-                if proc.stdout is not None:
-                    line = proc.stdout.readline()
-                    if line:
-                        output_lines.append(line)
-                        sys.stdout.write(line)
-                        sys.stdout.flush()
-                        if "Local tunnel endpoints:" in line:
-                            ready = True
-                            break
-            if not ready:
-                if proc.poll() is None:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                remaining = proc.communicate(timeout=2)[0] if proc.stdout else ""
-                if remaining:
-                    sys.stdout.write(remaining)
-                    sys.stdout.flush()
-                full_output = "".join(output_lines) + (remaining or "")
-                raise RuntimeError(
-                    f"netlane up failed to become ready within {ready_timeout}s:\n{full_output}"
-                )
-            yield proc
-        finally:
-            if proc.poll() is None:
-                os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+        assert proc.stdout is not None
+        stdout = proc.stdout
+        # None marks EOF. The reader keeps draining until the process exits, so a
+        # verbose `up` can never block on a full pipe.
+        lines: queue.Queue[Optional[str]] = queue.Queue()
+
+        def _drain() -> None:
+            for line in stdout:
+                lines.put(line)
+            lines.put(None)
+
+        reader = threading.Thread(target=_drain, daemon=True)
+        reader.start()
+
+        output: list[str] = []
+        eof = False
+
+        def _collect(deadline: float, until: Optional[str] = None) -> bool:
+            """Echoes output until `until` shows up, EOF or the deadline. True if `until` was seen."""
+            nonlocal eof
+            while not eof:
                 try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-            # Safety teardown
-            self._run_cmd(
-                [
-                    "uv",
-                    "run",
-                    "netlane",
-                    "--config",
-                    str(self.config_path),
-                    "-v",
-                    "down",
-                    profile,
-                ]
+                    line = lines.get(timeout=max(deadline - time.monotonic(), 0))
+                except queue.Empty:
+                    return False
+                if line is None:
+                    eof = True
+                    break
+                output.append(line)
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                if until is not None and until in line:
+                    return True
+            return False
+
+        def _kill() -> None:
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+            _collect(time.monotonic() + 2)
+
+        def _interrupt() -> Optional[int]:
+            """Sends Ctrl-C to `up` and returns its exit code, or None if it did not exit in time."""
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGINT)
+            # Do not rely on EOF alone, a leftover child may keep the pipe open.
+            deadline = time.monotonic() + exit_timeout
+            while proc.poll() is None and time.monotonic() < deadline:
+                _collect(min(deadline, time.monotonic() + 0.2))
+            if proc.poll() is None:
+                _kill()
+                return None
+            _collect(time.monotonic() + 2)
+            return proc.returncode
+
+        try:
+            if not _collect(
+                time.monotonic() + ready_timeout, "Local tunnel endpoints:"
+            ):
+                exited = proc.poll() is not None or eof
+                _kill()
+                reason = (
+                    f"exited with code {proc.returncode} before becoming ready"
+                    if exited
+                    else f"failed to become ready within {ready_timeout}s"
+                )
+                raise RuntimeError(f"netlane up {reason}:\n{''.join(output)}")
+            yield proc
+        except BaseException:
+            _interrupt()
+            self.down(profile, check=False)
+            raise
+
+        returncode = _interrupt()
+        if returncode != 0:
+            self.down(profile, check=False)
+            reason = (
+                f"did not exit within {exit_timeout}s"
+                if returncode is None
+                else f"exited with code {returncode}"
             )
+            raise RuntimeError(f"netlane up {reason} after Ctrl-C:\n{''.join(output)}")
 
     def down(self, profile: str, check: bool = True) -> subprocess.CompletedProcess:
         """Runs `netlane down`."""
@@ -426,3 +518,116 @@ def create_netlane():
         return NetlaneRunner(config_path)
 
     return _create
+
+
+def _adb(*args: str, timeout: float = 30.0) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["adb", "-s", ADB_SERIAL, *args],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+@pytest.fixture(scope="session")
+def adb_device():
+    """
+    Connects ADB to the Android container and waits until it has booted.
+    Skips integration tests if the device is not available.
+    """
+    start_hint = (
+        "Start the test environment with: "
+        "docker compose -f docker-compose.test.yml up -d"
+    )
+    if shutil.which("adb") is None:
+        pytest.skip("ADB ('adb') not found locally.")
+    if not is_port_open(ADB_HOST, ADB_PORT, timeout=2.0):
+        pytest.skip(f"Android device at {ADB_SERIAL} is not reachable. {start_hint}")
+
+    subprocess.run(["adb", "connect", ADB_SERIAL], capture_output=True, text=True)
+    # The package manager only answers once the system has booted.
+    deadline = time.time() + 90
+    booted = False
+    while time.time() < deadline:
+        res = _adb("shell", "-n", "getprop sys.boot_completed", timeout=10)
+        if res.returncode == 0 and res.stdout.strip() == "1":
+            booted = True
+            break
+        time.sleep(2)
+    if not booted:
+        pytest.skip(f"Android device at {ADB_SERIAL} did not finish booting.")
+
+    return {"serial": ADB_SERIAL, "elevation": ADB_ELEVATION}
+
+
+@pytest.fixture
+def device_exec(adb_device):
+    """Helper to run commands as root on the Android device for test assertions."""
+
+    def _exec(
+        cmd: str, check: bool = True, timeout: float = 30.0
+    ) -> subprocess.CompletedProcess:
+        if ADB_ELEVATION:
+            # Not every su takes -c, but they all read a script from stdin.
+            cmd = f"echo {shlex.quote(cmd)} | {ADB_ELEVATION}"
+        res = _adb("shell", "-n", cmd, timeout=timeout)
+        if check:
+            res.check_returncode()
+        return res
+
+    return _exec
+
+
+@pytest.fixture
+def adb_reverse_list(adb_device):
+    """Helper returning the device's active `adb reverse` tunnels."""
+
+    def _list() -> str:
+        res = _adb("reverse", "--list")
+        res.check_returncode()
+        return res.stdout
+
+    return _list
+
+
+def _adb_reverse_config(rules: str = "", tunnels: str = "proxy_main = 8080") -> str:
+    """Builds a config.toml with a 'rooted' adb_reverse profile for the test device."""
+    return f"""[profiles.rooted]
+mode = "adb_reverse"
+
+rules = [
+{rules}
+]
+
+[profiles.rooted.mode_opts]
+serial = "{ADB_SERIAL}"
+elevation = "{ADB_ELEVATION}"
+tunnels = {{ {tunnels} }}
+"""
+
+
+@pytest.fixture
+def adb_reverse_config(adb_device):
+    """Factory fixture building 'rooted' adb_reverse configs with custom rules or tunnels."""
+    return _adb_reverse_config
+
+
+@pytest.fixture
+def adb_integration_config(tmp_path, adb_device) -> Path:
+    """Generates a temporary config.toml pointing to the test Android device."""
+    config_file = tmp_path / "config.toml"
+    # The tunnel rule is restricted to IPv4, the container kernel may lack IPv6 NAT.
+    config_file.write_text(_adb_reverse_config("""
+  { name = "Redirect HTTP", daddr = ["0.0.0.0/0"], protocol = ["tcp"], dport = [80], target = "tunnel:proxy_main" },
+  { name = "Default Route", target = "action:passthrough" },
+"""))
+    return config_file
+
+
+@pytest.fixture
+def netlane_adb(adb_integration_config) -> Generator[NetlaneRunner, None, None]:
+    """Provides a NetlaneRunner for the 'rooted' profile and leaves the device clean."""
+    runner = NetlaneRunner(adb_integration_config)
+    runner.down("rooted", check=False)
+    yield runner
+    runner.down("rooted", check=False)

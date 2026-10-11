@@ -34,6 +34,8 @@ pythonVersion = "3.12"
 typeCheckingMode = "standard"
 
 [tool.pytest.ini_options]
+# Unit and integration tests share module basenames (e.g. test_adb_reverse.py).
+addopts = ["--import-mode=importlib"]
 markers = [
     "integration: marks tests as integration tests that require containers/services (deselect with '-m \"not integration\"')",
 ]
