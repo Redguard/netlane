@@ -71,6 +71,16 @@ ADB_SERIAL = f"{ADB_HOST}:{ADB_PORT}"
 # Redroid's adbd runs as the shell user and ships su. Set to "" for a device with root adbd.
 ADB_ELEVATION = os.environ.get("NETLANE_TEST_ADB_ELEVATION", "su")
 
+# Set to "1" (as CI does) to fail instead of skip when a test container is unavailable.
+REQUIRE_SERVICES = os.environ.get("NETLANE_TEST_REQUIRE_SERVICES") == "1"
+
+
+def _unavailable(reason: str) -> None:
+    """Skips the test, or fails it when the test containers are required."""
+    if REQUIRE_SERVICES:
+        pytest.fail(reason)
+    pytest.skip(reason)
+
 
 def _authorize_test_key(public_key: str) -> Optional[str]:
     """Installs the session's public key in the VPS container. Returns an error message on failure."""
@@ -165,7 +175,7 @@ def vps_server(configure_ssh):
     Skips integration tests if the VPS is not available.
     """
     if not is_port_open(VPS_HOST, VPS_PORT, timeout=2.0):
-        pytest.skip(
+        _unavailable(
             f"VPS server at {VPS_HOST}:{VPS_PORT} is not reachable. "
             "Start the test environment with: docker compose -f docker-compose.test.yml up -d"
         )
@@ -187,7 +197,7 @@ def vps_server(configure_ssh):
         reason = f"SSH connection to {VPS_USER}@{VPS_HOST}:{VPS_PORT} failed: {res.stderr.strip()}"
         if authorize_error:
             reason += f" (could not install the test key in container '{VPS_CONTAINER}': {authorize_error})"
-        pytest.skip(reason)
+        _unavailable(reason)
 
     return {"host": VPS_HOST, "port": VPS_PORT, "user": VPS_USER}
 
@@ -540,9 +550,9 @@ def adb_device():
         "docker compose -f docker-compose.test.yml up -d"
     )
     if shutil.which("adb") is None:
-        pytest.skip("ADB ('adb') not found locally.")
+        _unavailable("ADB ('adb') not found locally.")
     if not is_port_open(ADB_HOST, ADB_PORT, timeout=2.0):
-        pytest.skip(f"Android device at {ADB_SERIAL} is not reachable. {start_hint}")
+        _unavailable(f"Android device at {ADB_SERIAL} is not reachable. {start_hint}")
 
     subprocess.run(["adb", "connect", ADB_SERIAL], capture_output=True, text=True)
     # The package manager only answers once the system has booted.
@@ -555,7 +565,7 @@ def adb_device():
             break
         time.sleep(2)
     if not booted:
-        pytest.skip(f"Android device at {ADB_SERIAL} did not finish booting.")
+        _unavailable(f"Android device at {ADB_SERIAL} did not finish booting.")
 
     return {"serial": ADB_SERIAL, "elevation": ADB_ELEVATION}
 

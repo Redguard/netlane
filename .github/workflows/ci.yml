@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "**"
+  workflow_dispatch:
+  workflow_call:
+
+# Not keyed on github.workflow: when called from package.yml that is the caller's
+# name, and sharing its concurrency group would cancel the caller.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint (Black & Pyright)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Check code formatting (Black)
+        run: uv run black --check .
+
+      - name: Run type checking (Pyright)
+        run: uv run pyright
+
+  unit:
+    name: Unit Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.12"
+          - "3.13"
+          - "3.14"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run unit tests
+        run: uv run pytest tests/unit
+
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-24.04
+    env:
+      # A missing container must fail the job instead of skipping its tests.
+      NETLANE_TEST_REQUIRE_SERVICES: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Install local tools (wg, adb) and the binder module for redroid
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            wireguard-tools adb "linux-modules-extra-$(uname -r)"
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"
+
+      - name: Start test containers
+        run: docker compose -f docker-compose.test.yml up -d --build
+
+      - name: Wait for VPS SSH
+        run: |
+          timeout 60 bash -c \
+            'until docker exec netlane-vps systemctl is-active --quiet ssh; do sleep 1; done'
+
+      - name: Wait for Android boot
+        run: |
+          timeout 180 bash -c '
+            until [ "$(adb -s 127.0.0.1:5555 shell -n getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ]; do
+              adb connect 127.0.0.1:5555 >/dev/null
+              sleep 2
+            done'
+
+      - name: Run integration tests
+        run: uv run pytest tests/integration -rs
+
+      - name: Show container logs
+        if: failure()
+        run: docker compose -f docker-compose.test.yml logs --tail 200
+
+      - name: Teardown test containers
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v

@@ -178,7 +178,7 @@ docker compose -f docker-compose.test.yml down
 >   sudo modprobe -a iptable_filter iptable_nat ip6table_filter ip6table_nat xt_owner xt_comment ipt_REJECT ip6t_REJECT
 >   ```
 > - The device is reached over ADB on port `5555`. Override with `NETLANE_TEST_ADB_HOST`, `NETLANE_TEST_ADB_PORT`, and `NETLANE_TEST_ADB_ELEVATION` (default `su`).
-> - Tests of a mode skip when its container is not reachable.
+> - Tests of a mode skip when its container is not reachable. Set `NETLANE_TEST_REQUIRE_SERVICES=1` (as CI does) to fail instead.
 
 
 ### Type Checking
