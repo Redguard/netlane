@@ -178,7 +178,7 @@ docker compose -f docker-compose.test.yml down
 >   sudo modprobe binder_linux devices=binder,hwbinder,vndbinder
 >   sudo modprobe -a iptable_filter iptable_nat ip6table_filter ip6table_nat xt_owner xt_comment ipt_REJECT ip6t_REJECT
 >   ```
-> - The `redroid` container is deliberately not `privileged`: its device cgroup only allows the binder major (`BINDER_MAJOR`), so it cannot create loop devices or reach other host devices. Keep it on an image with flattened APEX modules (up to `14.0.0`); newer ones need loop devices and do not boot under this restriction.
+> - The `redroid` container is deliberately not `privileged`: its device cgroup only allows the binder major (`BINDER_MAJOR`), so it cannot create loop devices or reach other host devices. Keep it on an image with flattened APEX modules (up to `14.0.0`); newer ones need loop devices and do not boot under this restriction. Use the `_64only` variant: the multilib image's 32-bit zygote dies on GitHub's runners and takes the 64-bit zygote down with it, so Android never finishes booting.
 > - The device is reached over ADB on port `5555`. Override with `NETLANE_TEST_ADB_HOST`, `NETLANE_TEST_ADB_PORT`, and `NETLANE_TEST_ADB_ELEVATION` (default `su`).
 > - Tests of a mode skip when its container is not reachable. Set `NETLANE_TEST_REQUIRE_SERVICES=1` (as CI does) to fail instead.
 

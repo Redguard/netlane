@@ -18,7 +18,9 @@ services:
   redroid:
     # Newest redroid with flattened APEX modules. From 15.0.0 on, apexd attaches
     # every module to a loop device, which lives in the shared host kernel.
-    image: redroid/redroid:14.0.0-latest
+    # 64-bit only: on GitHub's runners the 32-bit zygote of the multilib image dies
+    # at start, and init then restarts the 64-bit one in a loop (boot never completes).
+    image: redroid/redroid:14.0.0_64only-latest
     container_name: netlane-redroid
     # Not privileged: the only host devices the container may touch are binder
     # nodes, so it cannot create loop devices or reach host disks.
