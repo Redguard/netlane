@@ -72,7 +72,7 @@ Burp / MitM (Host)
 - **App & UID Matching**: Resolves Android package names to UIDs across all user profiles (calling `pm list users` and `cmd package list packages -U --user <uid>`), applying `-m owner --uid-owner <uid>`.
 - **Reverse Tunnels**: Configured via `adb reverse tcp:<port> tcp:<port>`.
 - **Lifecycle Steps**:
-  1. `up`: Verifies root shell and port availability, checks for IPv6 NAT support, resolves package UIDs, applies iptables script, establishes `adb reverse` tunnels, and monitors connection status via background `adb wait-for-disconnect`. Blocks until Ctrl-C or device disconnects.
+  1. `up`: Verifies root shell and port availability, checks for IPv6 NAT support, resolves package UIDs, applies iptables script, establishes `adb reverse` tunnels, and monitors connection status via a background `adb shell` that only ends with the connection (`adb wait-for-disconnect` returns immediately in some adb releases). Blocks until Ctrl-C or device disconnects.
   2. `down`: Removes reverse tunnels, removes `iptables` chains and hooks.
 - **Special Considerations**:
   - Traffic to loopback and device's own addresses bypasses rules.

@@ -21,6 +21,8 @@ SUMMARY = "iptables on a rooted device, ADB reverse tunnels to local ports"
 STEPS = ("up", "down")
 
 CHAIN_NAME = APP_NAME
+# Android's sleep has no "infinity". 2**31 - 1 seconds fits every implementation.
+SLEEP_FOREVER = "sleep 2147483647"
 
 
 def setup(name: str, profile: Profile[AdbReverseOpts], distro: str) -> None:
@@ -70,7 +72,9 @@ def up(name: str, profile: Profile[AdbReverseOpts]) -> None:
         _start_reverse_tunnels(serial, ports)
         _run_hook(serial, mode_opts.elevation, profile.hooks.get("post_up", ""))
 
-        watcher = adb.start(serial, ["wait-for-disconnect"])
+        # A device shell that only ends with the connection. Some adb releases (seen
+        # with 31.0.3 and 34.0.4) return from `adb wait-for-disconnect` at once.
+        watcher = adb.start(serial, ["shell", "-n", SLEEP_FOREVER])
         logger.info(
             "Local tunnel endpoints: " + ", ".join(f"localhost:{p}" for p in ports)
         )
