@@ -331,7 +331,11 @@ class NetlaneRunner:
 
     @contextmanager
     def up(
-        self, profile: str, ready_timeout: float = 15.0, exit_timeout: float = 20.0
+        self,
+        profile: str,
+        ready_timeout: float = 15.0,
+        exit_timeout: float = 20.0,
+        check: bool = True,
     ) -> Generator[subprocess.Popen, None, None]:
         """
         Runs `netlane up` as a background process and interrupts it on context exit.
@@ -339,6 +343,7 @@ class NetlaneRunner:
         Leaving the context sends Ctrl-C and requires `up` to tear down on its own
         and exit cleanly. `netlane down` only runs as a fallback when something
         failed, so that a broken teardown is not hidden and later tests start clean.
+        Without `check`, `up` may exit with any code, e.g. when a test ended it.
         """
         cmd = [
             "uv",
@@ -433,6 +438,8 @@ class NetlaneRunner:
         returncode = _interrupt()
         if returncode != 0:
             self.down(profile, check=False)
+            if returncode is not None and not check:
+                return
             reason = (
                 f"did not exit within {exit_timeout}s"
                 if returncode is None

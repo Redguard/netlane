@@ -103,8 +103,8 @@ Each test sends a line with a unique payload and then checks where it ended up: 
 
 | File | What it covers |
 | --- | --- |
-| [test_wireguard_ssh_reverse.py](../tests/integration/test_wireguard_ssh_reverse.py) | `setup`, `pair`, `up`, `down` and each rule target against the VPS container. |
-| [test_adb_reverse.py](../tests/integration/test_adb_reverse.py) | `up`, `down` and each rule target against the Redroid container. |
+| [test_wireguard_ssh_reverse.py](../tests/integration/test_wireguard_ssh_reverse.py) | `setup`, `pair`, `up`, `down` and each rule target against the VPS container. Also the teardown of a failed `up` and a matrix of rules that `nft` has to accept. |
+| [test_adb_reverse.py](../tests/integration/test_adb_reverse.py) | `up`, `down` and each rule target against the Redroid container. Also the teardown of a failed `up` and a matrix of rules that `iptables` has to accept. |
 | [test_profile_jailed.py](../tests/integration/test_profile_jailed.py) | The `jailed` profile of the shipped [config.toml](../config.toml), with traffic of a WireGuard client. |
 | [test_profile_rooted.py](../tests/integration/test_profile_rooted.py) | The `rooted` profile of the shipped [config.toml](../config.toml), with traffic of the Android device. |
 

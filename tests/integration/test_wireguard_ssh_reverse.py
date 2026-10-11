@@ -1,6 +1,47 @@
+import subprocess
 from pathlib import Path
 
 import pytest
+
+from netlane.config import load_config
+
+
+def _wireguard_config(
+    vps_server, profile: str, rules: str = "", hooks: str = ""
+) -> str:
+    """Builds a config.toml with a wireguard_ssh_reverse profile for the test VPS."""
+    return f"""[profiles.{profile}]
+mode = "wireguard_ssh_reverse"
+
+rules = [
+{rules}
+]
+
+[profiles.{profile}.mode_opts]
+ssh_host = "{vps_server['host']}"
+ssh_user = "{vps_server['user']}"
+elevation = "sudo"
+tunnels = {{ first = 8080, second = 8081 }}
+
+[profiles.{profile}.hooks]
+{hooks}
+"""
+
+
+def _assert_vps_clean(vps_exec):
+    # 1. wg0 interface no longer exists
+    assert vps_exec("ip link show wg0", check=False).returncode != 0
+
+    # 2. inet netlane nftables table is removed
+    assert vps_exec("nft list table inet netlane", check=False).returncode != 0
+
+    # 3. wg0 is removed from trusted_ifaces set
+    trusted = vps_exec("nft list set inet base_filter trusted_ifaces")
+    assert "wg0" not in trusted.stdout
+
+    # 4. Kernel forwarding is disabled
+    assert vps_exec("sysctl -n net.ipv4.ip_forward").stdout.strip() == "0"
+    assert vps_exec("sysctl -n net.ipv6.conf.all.forwarding").stdout.strip() == "0"
 
 
 @pytest.mark.integration
@@ -319,3 +360,79 @@ post_down = "touch /tmp/hook_post_down"
         vps_exec(
             "rm -f /tmp/hook_pre_up /tmp/hook_post_up /tmp/hook_pre_down /tmp/hook_post_down"
         )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("hook", ["pre_up", "post_up"])
+def test_failed_up_tears_down(
+    setup_vps, vps_server, tmp_path, vps_exec, create_netlane, hook
+):
+    cfg = tmp_path / "failing_config.toml"
+    cfg.write_text(
+        _wireguard_config(
+            vps_server,
+            "failing",
+            '{ name = "Default Route", target = "action:passthrough" },',
+            # pre_up fails once WireGuard is up, post_up once it is trusted as well.
+            f'{hook} = "exit 3"',
+        )
+    )
+    runner = create_netlane(cfg)
+    runner.pair("failing", force=True)
+
+    try:
+        res = runner.run("up", "failing")
+
+        assert res.returncode != 0
+        assert "Command failed with exit code 3" in (res.stdout + res.stderr)
+        _assert_vps_clean(vps_exec)
+    finally:
+        runner.down("failing", check=False)
+
+
+@pytest.mark.integration
+def test_closed_tunnel_tears_down(paired_vps, netlane, vps_exec):
+    with netlane.up("jailed", check=False) as proc:
+        assert "10.10.10.1:8080" in vps_exec("ss -tln").stdout
+
+        # `up` leads its own process group, which the tunnel's ssh is part of.
+        subprocess.run(["pkill", "-g", str(proc.pid), "-f", "ssh -N -R"], check=True)
+        proc.wait(timeout=30)
+
+        _assert_vps_clean(vps_exec)
+
+
+# One rule per way of matching, to have the gateway's nft accept what the backend
+# generates. Rules of every target are spread over them.
+RULE_MATRIX = """
+  { name = "Port set", protocol = ["tcp"], dport = [8001, 8002], target = "action:drop" },
+  { name = "Source and destination port", protocol = ["udp"], sport = [5000], dport = [5001], target = "action:reject" },
+  { name = "Ports of two protocols", protocol = ["tcp", "udp"], sport = [6000, 6001], dport = [53, 853], target = "action:passthrough" },
+  { name = "Ports without protocol", sport = [7000], dport = [7001, 7002], target = "action:drop" },
+  { name = "Protocol set", protocol = ["icmp", "ipv6-icmp"], target = "action:passthrough" },
+  { name = "Protocol by number", protocol = ["47"], target = "action:reject" },
+  { name = "Ports of another protocol", protocol = ["sctp"], dport = [9], target = "action:drop" },
+  { name = "Single addresses", saddr = ["10.10.10.2"], daddr = ["192.0.2.1"], target = "action:passthrough" },
+  { name = "Networks of both families", daddr = ["198.51.100.0/24", "203.0.113.7", "2001:db8::/32"], protocol = ["tcp"], dport = [22], target = "action:reject" },
+  { name = "Source and destination of both families", saddr = ["10.10.10.0/24", "fd10:10:10::/64"], daddr = ["192.0.2.0/24", "2001:db8:1::1"], target = "action:passthrough" },
+  { name = "Tunnel for IPv4 only", daddr = ["0.0.0.0/0"], protocol = ["tcp"], dport = [80], target = "tunnel:first" },
+  { name = "Tunnel for both families", protocol = ["tcp"], dport = [443, 8443], target = "tunnel:second" },
+  { name = "Punctuation (a, b): c/d+e-f_g.", protocol = ["udp"], target = "action:drop" },
+  { name = "Catch all", target = "action:passthrough" },
+"""
+
+
+@pytest.mark.integration
+def test_rule_matrix_is_accepted_by_nft(
+    setup_vps, vps_server, tmp_path, vps_exec, create_netlane
+):
+    cfg = tmp_path / "matrix_config.toml"
+    cfg.write_text(_wireguard_config(vps_server, "matrix", RULE_MATRIX))
+    runner = create_netlane(cfg)
+    runner.pair("matrix", force=True)
+
+    with runner.up("matrix"):
+        ruleset = vps_exec("nft list table inet netlane").stdout
+
+    for rule in load_config(cfg).profiles["matrix"].rules:
+        assert f'comment "{rule.name}"' in ruleset

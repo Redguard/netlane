@@ -1,5 +1,7 @@
 import pytest
 
+from netlane.config import load_config
+
 HOOK_FILES = " ".join(
     f"/data/local/tmp/hook_{hook}"
     for hook in ("pre_up", "post_up", "pre_down", "post_down")
@@ -234,3 +236,76 @@ post_down = "touch /data/local/tmp/hook_post_down"
         assert hook_ran("post_down")
     finally:
         device_exec(f"rm -f {HOOK_FILES}")
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("hook", ["pre_up", "post_up"])
+def test_failed_up_tears_down(
+    adb_reverse_config, tmp_path, device_exec, adb_reverse_list, create_netlane, hook
+):
+    cfg = tmp_path / "failing_config.toml"
+    # pre_up fails before the rules are applied, post_up with rules and tunnel in place.
+    cfg.write_text(
+        adb_reverse_config("""
+  { name = "Default Route", target = "action:passthrough" },
+""")
+        + f"""
+[profiles.rooted.hooks]
+{hook} = "exit 3"
+"""
+    )
+    runner = create_netlane(cfg)
+    runner.down("rooted", check=False)
+
+    try:
+        res = runner.run("up", "rooted")
+
+        assert res.returncode != 0
+        assert "Command failed with exit code 3" in (res.stdout + res.stderr)
+        _assert_device_clean(device_exec, adb_reverse_list)
+    finally:
+        runner.down("rooted", check=False)
+
+
+# One rule per way of matching, to have the device's iptables accept what the
+# backend generates. Rules of every target are spread over them.
+# Tunnel rules are restricted to IPv4, the container kernel may lack IPv6 NAT.
+RULE_MATRIX = """
+  { name = "Port set", protocol = ["tcp"], dport = [8001, 8002], target = "action:drop" },
+  { name = "Source and destination port", protocol = ["udp"], sport = [5000], dport = [5001], target = "action:reject" },
+  { name = "Ports of two protocols", protocol = ["tcp", "udp"], sport = [6000, 6001], dport = [53, 853], target = "action:passthrough" },
+  { name = "Protocol set", protocol = ["icmp", "ipv6-icmp"], target = "action:passthrough" },
+  { name = "Protocol by number", protocol = ["47"], target = "action:reject" },
+  { name = "Another named protocol", protocol = ["sctp"], target = "action:drop" },
+  { name = "Owner uids", skuid = [0, 1000], protocol = ["udp"], dport = [123], target = "action:drop" },
+  { name = "App and uid", app = ["com.android.shell"], skuid = [1000], protocol = ["udp"], dport = [124], target = "action:reject" },
+  { name = "Single addresses", saddr = ["192.0.2.2"], daddr = ["192.0.2.1"], target = "action:passthrough" },
+  { name = "Networks of both families", daddr = ["198.51.100.0/24", "203.0.113.7", "2001:db8::/32"], protocol = ["tcp"], dport = [22], target = "action:reject" },
+  { name = "Source and destination of both families", saddr = ["192.0.2.0/24", "198.51.100.0/24", "2001:db8:2::/48"], daddr = ["203.0.113.0/24", "2001:db8:1::1"], target = "action:passthrough" },
+  { name = "Tunnel for IPv4 only", daddr = ["0.0.0.0/0"], protocol = ["tcp"], dport = [80, 443], target = "tunnel:first" },
+  { name = "Tunnel for an app", daddr = ["0.0.0.0/0"], protocol = ["tcp"], dport = [8443], app = ["com.android.shell"], target = "tunnel:second" },
+  { name = "Punctuation (a, b): c/d+e-f_g.", protocol = ["udp"], target = "action:drop" },
+  { name = "Catch all", target = "action:passthrough" },
+"""
+
+
+@pytest.mark.integration
+def test_rule_matrix_is_accepted_by_iptables(
+    adb_reverse_config, tmp_path, device_exec, create_netlane
+):
+    cfg = tmp_path / "matrix_config.toml"
+    cfg.write_text(
+        adb_reverse_config(RULE_MATRIX, tunnels="first = 8080, second = 8081")
+    )
+    runner = create_netlane(cfg)
+    runner.down("rooted", check=False)
+
+    with runner.up("rooted"):
+        rulesets = {
+            4: device_exec("iptables -w -S netlane; iptables -w -t nat -S netlane"),
+            6: device_exec("ip6tables -w -S netlane"),
+        }
+
+    for rule in load_config(cfg).profiles["rooted"].rules:
+        for family in rule.families:
+            assert f'--comment "{rule.name}"' in rulesets[family].stdout

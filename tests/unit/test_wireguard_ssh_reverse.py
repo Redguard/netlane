@@ -1,5 +1,6 @@
 import io
 import shlex
+import signal
 import subprocess
 from dataclasses import replace
 
@@ -128,6 +129,102 @@ def test_up_flushes_conntrack_before_trusting_wireguard(server, monkeypatch):
         "_teardown_nft",
         "_flush_conntrack",
     ]
+
+
+class RunningProcess:
+    """A tunnel that stays open until Ctrl-C."""
+
+    def __init__(self):
+        self.terminated = False
+
+    def wait(self):
+        if not self.terminated:
+            raise KeyboardInterrupt
+        return 0
+
+    def poll(self):
+        return 0 if self.terminated else None
+
+    def terminate(self):
+        self.terminated = True
+
+
+TEARDOWN = ["_stop_wireguard", "_teardown_nft", "_flush_conntrack"]
+
+
+def record_up(monkeypatch, tunnel, failing=None):
+    """Replaces what `up` and `down` run on the server and returns the list of their calls. `failing` fails on its first call."""
+    calls = []
+
+    def step(name, result=None):
+        def run(*args):
+            calls.append(name)
+            if name == failing and calls.count(name) == 1:
+                raise subprocess.CalledProcessError(1, name)
+            return result
+
+        return run
+
+    for name in (
+        "_start_wireguard",
+        "_run_hook",
+        "_apply_nft_script",
+        "_flush_conntrack",
+        "_register_trusted_iface",
+        "_stop_wireguard",
+        "_teardown_nft",
+    ):
+        monkeypatch.setattr(mode, name, step(name))
+    monkeypatch.setattr(mode.remote, "start", step("start", tunnel))
+    return calls
+
+
+@pytest.mark.parametrize(
+    "failing",
+    [
+        "_start_wireguard",
+        pytest.param("_run_hook", id="pre_up hook"),
+        "_apply_nft_script",
+        "_flush_conntrack",
+        "_register_trusted_iface",
+        pytest.param("start", id="tunnel start"),
+    ],
+)
+def test_up_tears_down_and_reraises_on_failure(server, monkeypatch, failing):
+    """A failed `up` must not leave the server forwarding or trusting WireGuard."""
+    calls = record_up(monkeypatch, FinishedProcess(), failing)
+    previous_handler = signal.getsignal(signal.SIGINT)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        mode.up("jailed", PROFILE)
+
+    after_failure = calls[calls.index(failing) + 1 :]
+    assert [c for c in after_failure if c != "_run_hook"] == TEARDOWN
+    assert signal.getsignal(signal.SIGINT) is previous_handler
+
+
+def test_up_tears_down_when_tunnel_closes_unexpectedly(server, monkeypatch, caplog):
+    calls = record_up(monkeypatch, FinishedProcess())
+
+    mode.up("jailed", PROFILE)
+
+    assert "Tunnel closed unexpectedly." in caplog.text
+    after_start = calls[calls.index("start") + 1 :]
+    assert [c for c in after_start if c != "_run_hook"] == TEARDOWN
+
+
+def test_up_stops_tunnel_and_tears_down_on_ctrl_c(server, monkeypatch, caplog):
+    tunnel = RunningProcess()
+    calls = record_up(monkeypatch, tunnel)
+    previous_handler = signal.getsignal(signal.SIGINT)
+
+    mode.up("jailed", PROFILE)
+
+    assert tunnel.terminated
+    assert "Tunnel closed unexpectedly." not in caplog.text
+    after_start = calls[calls.index("start") + 1 :]
+    assert [c for c in after_start if c != "_run_hook"] == TEARDOWN
+    assert signal.getsignal(signal.SIGINT) is previous_handler
 
 
 @pytest.mark.parametrize(
