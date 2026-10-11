@@ -87,11 +87,10 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
-      - name: Install local tools (wg, adb) and kernel modules for the containers
+      - name: Install local tools (wg, adb) and load kernel modules for the containers
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            wireguard-tools adb "linux-modules-extra-$(uname -r)"
+          sudo apt-get install -y --no-install-recommends wireguard-tools adb
           # The containers share the runner's kernel and cannot load modules themselves.
           # redroid needs binder to boot and the legacy iptables tables for netlane's rules.
           sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"
