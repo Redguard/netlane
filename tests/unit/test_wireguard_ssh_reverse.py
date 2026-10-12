@@ -1,6 +1,6 @@
 import io
 import shlex
-import shutil
+import signal
 import subprocess
 from dataclasses import replace
 
@@ -83,20 +83,6 @@ def test_pair_refuses(server, state, force, message):
         mode.pair("jailed", PROFILE, None, force=force)
 
 
-def test_pair_with_force_replaces_keys(server, monkeypatch):
-    deployed = []
-    monkeypatch.setattr(mode.shutil, "which", lambda cmd: "/usr/bin/wg")
-    monkeypatch.setattr(mode, "_generate_configs", lambda host: ("srv", "cli"))
-    monkeypatch.setattr(
-        mode, "_deploy_server_config", lambda *args: deployed.append(args[-1])
-    )
-    monkeypatch.setattr(mode, "_display_qr_code", lambda conf: None)
-
-    mode.pair("jailed", PROFILE, None, force=True)
-
-    assert deployed == ["srv"]
-
-
 def test_down_runs_hooks_around_teardown(monkeypatch):
     calls = []
     monkeypatch.setattr(mode, "_run_hook", lambda t, e, cmd: calls.append(cmd))
@@ -143,6 +129,102 @@ def test_up_flushes_conntrack_before_trusting_wireguard(server, monkeypatch):
         "_teardown_nft",
         "_flush_conntrack",
     ]
+
+
+class RunningProcess:
+    """A tunnel that stays open until Ctrl-C."""
+
+    def __init__(self):
+        self.terminated = False
+
+    def wait(self):
+        if not self.terminated:
+            raise KeyboardInterrupt
+        return 0
+
+    def poll(self):
+        return 0 if self.terminated else None
+
+    def terminate(self):
+        self.terminated = True
+
+
+TEARDOWN = ["_stop_wireguard", "_teardown_nft", "_flush_conntrack"]
+
+
+def record_up(monkeypatch, tunnel, failing=None):
+    """Replaces what `up` and `down` run on the server and returns the list of their calls. `failing` fails on its first call."""
+    calls = []
+
+    def step(name, result=None):
+        def run(*args):
+            calls.append(name)
+            if name == failing and calls.count(name) == 1:
+                raise subprocess.CalledProcessError(1, name)
+            return result
+
+        return run
+
+    for name in (
+        "_start_wireguard",
+        "_run_hook",
+        "_apply_nft_script",
+        "_flush_conntrack",
+        "_register_trusted_iface",
+        "_stop_wireguard",
+        "_teardown_nft",
+    ):
+        monkeypatch.setattr(mode, name, step(name))
+    monkeypatch.setattr(mode.remote, "start", step("start", tunnel))
+    return calls
+
+
+@pytest.mark.parametrize(
+    "failing",
+    [
+        "_start_wireguard",
+        pytest.param("_run_hook", id="pre_up hook"),
+        "_apply_nft_script",
+        "_flush_conntrack",
+        "_register_trusted_iface",
+        pytest.param("start", id="tunnel start"),
+    ],
+)
+def test_up_tears_down_and_reraises_on_failure(server, monkeypatch, failing):
+    """A failed `up` must not leave the server forwarding or trusting WireGuard."""
+    calls = record_up(monkeypatch, FinishedProcess(), failing)
+    previous_handler = signal.getsignal(signal.SIGINT)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        mode.up("jailed", PROFILE)
+
+    after_failure = calls[calls.index(failing) + 1 :]
+    assert [c for c in after_failure if c != "_run_hook"] == TEARDOWN
+    assert signal.getsignal(signal.SIGINT) is previous_handler
+
+
+def test_up_tears_down_when_tunnel_closes_unexpectedly(server, monkeypatch, caplog):
+    calls = record_up(monkeypatch, FinishedProcess())
+
+    mode.up("jailed", PROFILE)
+
+    assert "Tunnel closed unexpectedly." in caplog.text
+    after_start = calls[calls.index("start") + 1 :]
+    assert [c for c in after_start if c != "_run_hook"] == TEARDOWN
+
+
+def test_up_stops_tunnel_and_tears_down_on_ctrl_c(server, monkeypatch, caplog):
+    tunnel = RunningProcess()
+    calls = record_up(monkeypatch, tunnel)
+    previous_handler = signal.getsignal(signal.SIGINT)
+
+    mode.up("jailed", PROFILE)
+
+    assert tunnel.terminated
+    assert "Tunnel closed unexpectedly." not in caplog.text
+    after_start = calls[calls.index("start") + 1 :]
+    assert [c for c in after_start if c != "_run_hook"] == TEARDOWN
+    assert signal.getsignal(signal.SIGINT) is previous_handler
 
 
 @pytest.mark.parametrize(
@@ -241,27 +323,6 @@ def test_setup_passes_shared_values_to_script(ssh_commands):
 @pytest.mark.parametrize("value", SHARED_VALUES)
 def test_script_does_not_hardcode_shared_values(value):
     assert value not in SCRIPT.read_text()
-
-
-needs_wg = pytest.mark.skipif(shutil.which("wg") is None, reason="needs wg")
-
-
-@needs_wg
-def test_server_conf_is_dual_stack():
-    """The server's tunnel address and its peer's allowed source range both cover IPv6."""
-    server_conf, _ = _generate_configs("203.0.113.5")
-
-    assert "Address = 10.10.10.1/24, fd10:10:10::1/64" in server_conf
-    assert "AllowedIPs = 10.10.10.2/32, fd10:10:10::2/128" in server_conf
-
-
-@needs_wg
-def test_client_conf_is_dual_stack():
-    """The client's tunnel address and default route both cover IPv6."""
-    _, client_conf = _generate_configs("203.0.113.5")
-
-    assert "Address = 10.10.10.2/24, fd10:10:10::2/64" in client_conf
-    assert "AllowedIPs = 0.0.0.0/0, ::/0" in client_conf
 
 
 @pytest.mark.parametrize(

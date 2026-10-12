@@ -72,7 +72,7 @@ Burp / MitM (Host)
 - **App & UID Matching**: Resolves Android package names to UIDs across all user profiles (calling `pm list users` and `cmd package list packages -U --user <uid>`), applying `-m owner --uid-owner <uid>`.
 - **Reverse Tunnels**: Configured via `adb reverse tcp:<port> tcp:<port>`.
 - **Lifecycle Steps**:
-  1. `up`: Verifies root shell and port availability, checks for IPv6 NAT support, resolves package UIDs, applies iptables script, establishes `adb reverse` tunnels, and monitors connection status via background `adb wait-for-disconnect`. Blocks until Ctrl-C or device disconnects.
+  1. `up`: Verifies root shell and port availability, checks for IPv6 NAT support, resolves package UIDs, applies iptables script, establishes `adb reverse` tunnels, and monitors connection status via a background `adb shell` that only ends with the connection (`adb wait-for-disconnect` returns immediately in some adb releases). Blocks until Ctrl-C or device disconnects.
   2. `down`: Removes reverse tunnels, removes `iptables` chains and hooks.
 - **Special Considerations**:
   - Traffic to loopback and device's own addresses bypasses rules.
@@ -111,17 +111,24 @@ netlane/
 │           └── ubuntu/
 │               └── install.sh      # VPS bootstrapping script for wireguard_ssh_reverse
 └── tests/
-    ├── conftest.py
-    ├── resources/                  # TOML test fixtures (full_example.toml, etc.)
-    ├── test_adb.py                 # Tests for adb helper wrappers
-    ├── test_adb_reverse.py         # Unit & mock step tests for adb_reverse mode
-    ├── test_cli.py                 # Argument parsing and CLI dispatch tests
-    ├── test_config_parser.py       # Comprehensive TOML parsing and validation tests
-    ├── test_iptables.py            # iptables generation and formatting tests
-    ├── test_nftables.py            # nftables generation and formatting tests
-    ├── test_remote.py              # SSH / SCP remote command execution tests
-    ├── test_utils.py               # Utility, logging, and signal handling tests
-    └── test_wireguard_ssh_reverse.py # Unit & mock step tests for wireguard_ssh_reverse mode
+    ├── integration/                # Integration tests requiring container/service environments
+    │   ├── conftest.py             # SSH config, fixtures, and NetlaneRunner for container testing
+    │   ├── docker/                 # Container definitions for integration testing
+    │   ├── test_wireguard_ssh_reverse.py # Generic wireguard_ssh_reverse tests (setup, pair, up, down, rule targets) against the VPS container
+    │   ├── test_adb_reverse.py     # Generic adb_reverse tests (up, down, rule targets) against the Redroid container
+    │   ├── test_profile_jailed.py  # config.toml's jailed profile, with traffic of a WireGuard client
+    │   └── test_profile_rooted.py  # config.toml's rooted profile, with traffic of the Android device
+    ├── resources/                  # Shared TOML test fixtures (full_example.toml, etc.)
+    └── unit/                       # Unit & mock step tests
+        ├── test_adb.py             # Tests for adb helper wrappers
+        ├── test_adb_reverse.py     # Unit & mock step tests for adb_reverse mode
+        ├── test_cli.py             # Argument parsing and CLI dispatch tests
+        ├── test_config_parser.py   # Comprehensive TOML parsing and validation tests
+        ├── test_iptables.py        # iptables generation and formatting tests
+        ├── test_nftables.py        # nftables generation and formatting tests
+        ├── test_remote.py          # SSH / SCP remote command execution tests
+        ├── test_utils.py           # Utility, logging, and signal handling tests
+        └── test_wireguard_ssh_reverse.py # Unit & mock step tests for wireguard_ssh_reverse mode
 ```
 
 ---
@@ -136,18 +143,46 @@ uv sync
 ```
 
 ### Running Tests
-Run the entire test suite:
+Run unit tests:
 ```bash
-uv run pytest
+uv run pytest tests/unit
+# Or excluding integration tests via marker:
+uv run pytest -m "not integration"
 ```
-Run a specific test module:
+Run a specific unit test module:
 ```bash
-uv run pytest tests/test_config_parser.py
+uv run pytest tests/unit/test_config_parser.py
 ```
 Run tests matching a specific expression:
 ```bash
-uv run pytest -k "test_up"
+uv run pytest tests/unit -k "test_up"
 ```
+Run integration tests (requires container environment from `docker-compose.test.yml`):
+```bash
+# Start test containers (BINDER_MAJOR is required by every compose command on this file)
+export BINDER_MAJOR=$(awk '$2=="binder"{print $1}' /proc/devices)
+docker compose -f docker-compose.test.yml up -d
+
+# Run integration tests
+uv run pytest tests/integration
+
+# Teardown test containers
+docker compose -f docker-compose.test.yml down
+```
+
+> **Note on Architecture & Dev Containers**:
+> - The integration test VPS container (`tests/integration/docker/vps/Dockerfile`) is built from `ubuntu:26.04` with systemd enabled natively on both `amd64` and `arm64`.
+> - When running inside a VS Code Dev Container, port `2222` is exposed on the host machine. `tests/integration/conftest.py` automatically detects and uses `host.docker.internal` when `127.0.0.1` is unreachable.
+> - You can explicitly set the target VPS host via `NETLANE_TEST_VPS_HOST` (e.g. `NETLANE_TEST_VPS_HOST=127.0.0.1` or `host.docker.internal`).
+> - The `adb_reverse` tests run against the `redroid` container, which shares the Docker host's kernel. The host needs binder and the legacy iptables tables, otherwise the container does not boot or `iptables-restore` fails:
+>   ```bash
+>   sudo modprobe binder_linux devices=binder,hwbinder,vndbinder
+>   sudo modprobe -a iptable_filter iptable_nat ip6table_filter ip6table_nat xt_owner xt_comment ipt_REJECT ip6t_REJECT
+>   ```
+> - The `redroid` container is deliberately not `privileged`: its device cgroup only allows the binder major (`BINDER_MAJOR`), so it cannot create loop devices or reach other host devices. Keep it on an image with flattened APEX modules (up to `14.0.0`); newer ones need loop devices and do not boot under this restriction. Use the `_64only` variant: the multilib image's 32-bit zygote dies on GitHub's runners and takes the 64-bit zygote down with it, so Android never finishes booting.
+> - The device is reached over ADB on port `5555`. Override with `NETLANE_TEST_ADB_HOST`, `NETLANE_TEST_ADB_PORT`, and `NETLANE_TEST_ADB_ELEVATION` (default `su`).
+> - Tests of a mode skip when its container is not reachable. Set `NETLANE_TEST_REQUIRE_SERVICES=1` (as CI does) to fail instead.
+
 
 ### Type Checking
 Type checking is configured with `pyright` in standard mode (target Python 3.12, includes `src` and `tests`):
@@ -252,22 +287,46 @@ Each mode implements the `Mode` protocol:
 
 ## 7. Writing & Maintaining Tests
 
-The test suite uses `pytest` and runs in under 1 second without requiring physical Android devices, emulators, or remote VPS servers.
+The test suite is structured into fast unit tests (`tests/unit/`) and real-environment integration tests (`tests/integration/`).
 
-### Testing Conventions & Patterns
+### Unit Testing Conventions (`tests/unit/`)
+Unit tests use `pytest` and execute in milliseconds without requiring real Android devices, emulators, or remote VPS servers:
 1. **Mocking Remote and Local Commands**:
    - Use `monkeypatch` to intercept low-level runners (`remote.run`, `remote.run_script`, `adb.run`, `adb.shell`, `adb.run_script`, `subprocess.run`, `shutil.which`).
    - Use test fixtures to simulate state:
-     - `server` fixture in `tests/test_wireguard_ssh_reverse.py` simulates server setup state, pairing state, and interface status.
-     - `device` fixture in `tests/test_adb_reverse.py` simulates ADB device connection, root privileges, active tunnels, user listings, and package UID queries.
+     - `server` fixture in `tests/unit/test_wireguard_ssh_reverse.py` simulates server setup state, pairing state, and interface status.
+     - `device` fixture in `tests/unit/test_adb_reverse.py` simulates ADB device connection, root privileges, active tunnels, user listings, and package UID queries.
 2. **Testing Ruleset Compilers**:
-   - Test rule generation against exact expected output scripts in `tests/test_nftables.py` and `tests/test_iptables.py`.
+   - Test rule generation against exact expected output scripts in `tests/unit/test_nftables.py` and `tests/unit/test_iptables.py`.
    - Verify handling of single and multiple ports, protocols, IP subnets, mixed IPv4/IPv6, and UID mappings.
 3. **Testing Parser Validation**:
-   - Use `pytest.mark.parametrize` with expressive `id="..."` tags in `tests/test_config_parser.py`.
+   - Use `pytest.mark.parametrize` with expressive `id="..."` tags in `tests/unit/test_config_parser.py`.
    - Test both positive cases (`parse_config_string`) and expected exceptions (`pytest.raises(ConfigValidationError, match=...)`).
 4. **Testing CLI Behavior**:
-   - Test argument parsing, flag overrides (`--config`, `--log`, `--color`, `-v`), and subcommand execution in `tests/test_cli.py`.
+   - Test argument parsing, flag overrides (`--config`, `--log`, `--color`, `-v`), and subcommand execution in `tests/unit/test_cli.py`.
+
+### Integration Testing Conventions (`tests/integration/`)
+Integration tests run against live containerized environments defined in `docker-compose.test.yml`:
+1. **VPS Container (`tests/integration/docker/vps/Dockerfile`)**:
+   - Runs Ubuntu 26.04 with systemd, OpenSSH server, and WireGuard.
+   - Ships without any authorized SSH key. Each test session generates a throwaway key pair and the `vps_server` fixture installs its public half with `docker exec` (container name overridable via `NETLANE_TEST_VPS_CONTAINER`), so the tests need the `docker` CLI.
+   - Automatically detected by `tests/integration/conftest.py` on `127.0.0.1` or `host.docker.internal` (for Dev Containers).
+2. **Android Container (`redroid` service)**:
+   - Runs Redroid (Android 14) with ADB exposed on port `5555`. Its shell is unprivileged, so the tests use `elevation = "su"`.
+   - The `adb_device` fixture connects ADB and waits for boot, `device_exec` runs root commands on the device for assertions, and `netlane_adb` provides a `NetlaneRunner` for the `rooted` profile.
+   - `device_send` sends a line from the device, as the ADB shell's uid or as root.
+3. **Remote Container (`tests/integration/docker/remote/Dockerfile`)**:
+   - Stands in for a host on the internet beyond the gateway or device. It answers on a few TCP and UDP ports and records what reached them, with the sender's address.
+   - The `remote` fixture provides its address and `Remote.peers`, which tells whether a sent line arrived. Rules that reject, drop or pass traffic through can only be verified against it, so assert on it instead of on a client's exit code alone.
+4. **WireGuard Client Container (`tests/integration/docker/client/Dockerfile`)**:
+   - Stands in for the mobile device with the WireGuard app. The `wg_client` fixture brings up a client config from `netlane pair` in it with `docker exec` (container name overridable via `NETLANE_TEST_CLIENT_CONTAINER`). The client reaches the gateway's WireGuard port over the test network and routes everything else through the tunnel, the test network included. `paired_client` pairs the `jailed` profile and connects such a client.
+   - `local_listener` stands in for the analyst's proxy on a local tunnel port. `WireguardClient.send` and `device_send` return a `Sent` with a unique payload to look for in the listener's and the remote's records.
+5. **Test Files**:
+   - `test_wireguard_ssh_reverse.py` and `test_adb_reverse.py` are the generic tests of a mode: its steps, lifecycle, refusals, hooks, and every rule target with real traffic. They define their own small profiles.
+   - `test_profile_jailed.py` and `test_profile_rooted.py` test the profiles of the repository's `config.toml` as shipped. The `shipped_config` fixture only replaces environment values in it (SSH host and user, ADB serial and elevation, and the placeholder app with the ADB shell's package), and fails if `config.toml` no longer contains them. Each file brings its profile up once per module and sends traffic for every rule. When a profile in `config.toml` changes, update these tests with it.
+6. **Reserved Ports**:
+   - Local ports `8080-8090` are reserved for integration test tunnels and listeners. Bind listeners to the loopback addresses (`127.0.0.1`, `::1`) only; `.devcontainer/devcontainer.json` excludes this range from VS Code auto-forwarding so they stay inside the Dev Container.
+
 
 ---
 
