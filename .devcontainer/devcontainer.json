@@ -7,7 +7,9 @@
     "--add-host=host.docker.internal:host-gateway"
   ],
   "features": {
-    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+      "moby": false
+    }
   },
   "mounts": [
     "source=netlane-bashhistory,target=/commandhistory,type=volume"
