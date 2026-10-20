@@ -218,3 +218,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Integration test VM
+tests/integration/vm/.vagrant/

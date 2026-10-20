@@ -1,0 +1,110 @@
+# The integration test environment.
+# Simulates the external components of the tests: a VPS, an Android device, a WireGuard client and a remote host.
+# Needs a Docker host with binder and the legacy iptables tables in its kernel, which a dev container cannot provide.
+# Publishes nothing on the host.
+name: netlane-test
+
+services:
+  # Generates the stack's SSH client key, host key and known_hosts.
+  keys:
+    build: docker/keys
+    volumes:
+      - keys:/keys
+
+  vps:
+    build: docker/vps
+    privileged: true
+    cgroup: private
+    depends_on:
+      keys:
+        condition: service_completed_successfully
+    volumes:
+      - keys:/keys:ro
+    healthcheck:
+      test: ["CMD", "sh", "-c", "systemctl is-active --quiet ssh && test -s /home/ubuntu/.ssh/authorized_keys"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  redroid:
+    # The newest redroid with flattened APEX modules.
+    # From 15.0.0 on, apexd needs loop devices, which live in the shared host kernel.
+    # 64-bit only: the multilib image's 32-bit zygote dies on GitHub's runners and boot never completes.
+    image: redroid/redroid:14.0.0_64only-latest
+    # Not privileged: the container may only touch the binder devices.
+    cap_add:
+      - ALL
+    cap_drop:
+      - SYS_MODULE
+      - SYS_RAWIO
+      - SYS_BOOT
+      - SYS_TIME
+      - MAC_ADMIN
+      - MAC_OVERRIDE
+    security_opt:
+      # Android init mounts its own filesystems.
+      - apparmor=unconfined
+    device_cgroup_rules:
+      # binderfs gets a dynamic major: awk '$$2=="binder"{print $$1}' /proc/devices
+      - "c ${BINDER_MAJOR:?set BINDER_MAJOR to the binder major from /proc/devices}:* rwm"
+    tmpfs:
+      # Docker's read-only /sys makes init abort.
+      - /sys
+
+  client:
+    # A WireGuard client of the gateway, standing in for the mobile device.
+    build:
+      context: docker
+      dockerfile: client/Dockerfile
+    init: true
+    cap_add:
+      # Creates the WireGuard interface and routes its traffic into it.
+      - NET_ADMIN
+    sysctls:
+      # The tunnel is dual-stack.
+      - net.ipv6.conf.all.disable_ipv6=0
+      - net.ipv6.conf.default.disable_ipv6=0
+    depends_on:
+      keys:
+        condition: service_completed_successfully
+    volumes:
+      - keys:/keys:ro
+
+  remote:
+    # A host on the "internet" beyond the gateway or device, recording what reaches it.
+    build:
+      context: docker
+      dockerfile: remote/Dockerfile
+    init: true
+    depends_on:
+      keys:
+        condition: service_completed_successfully
+    volumes:
+      - keys:/keys:ro
+
+  runner:
+    # Runs pytest and the CLI, and hosts the listeners standing in for the proxy.
+    build:
+      context: ../..
+      dockerfile: tests/integration/docker/runner/Dockerfile
+    sysctls:
+      # The IPv6 tunnel endpoints bind to ::1.
+      - net.ipv6.conf.all.disable_ipv6=0
+    environment:
+      # Marks the integration test environment.
+      # Without it the integration tests skip.
+      IN_TEST_ENVIRONMENT: "1"
+    depends_on:
+      vps:
+        condition: service_healthy
+      redroid:
+        condition: service_started
+      client:
+        condition: service_started
+      remote:
+        condition: service_started
+    volumes:
+      - keys:/keys:ro
+
+volumes:
+  keys:

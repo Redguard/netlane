@@ -1,0 +1,12 @@
+[Unit]
+Description=Authorize the test stack's SSH key for the ubuntu user
+Before=ssh.service
+ConditionPathExists=/keys/id_ed25519.pub
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/install -d -m 700 -o ubuntu -g ubuntu /home/ubuntu/.ssh
+ExecStart=/usr/bin/install -m 600 -o ubuntu -g ubuntu /keys/id_ed25519.pub /home/ubuntu/.ssh/authorized_keys
+
+[Install]
+WantedBy=multi-user.target

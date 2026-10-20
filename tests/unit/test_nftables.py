@@ -14,7 +14,7 @@ from netlane.config import (
 )
 from netlane.rulesets.nftables import generate_nft_rules, remove_nft_rules
 
-RESOURCES_DIR = Path(__file__).resolve().parent / "resources"
+RESOURCES_DIR = Path(__file__).resolve().parent.parent / "resources"
 OPTS = WireguardSSHReverseOpts(
     ssh_host="test.local",
     ssh_user="test",

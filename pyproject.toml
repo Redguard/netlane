@@ -16,13 +16,13 @@ netlane = "netlane.cli:main"
 
 [dependency-groups]
 dev = [
-    "black>=26.5.1",
+    "black>=26.10.1",
     "pyright>=1.1.414",
     "pytest>=9.1.1",
 ]
 
 [build-system]
-requires = ["uv_build>=0.12.19,<0.13.0"]
+requires = ["uv_build>=0.13.0,<0.14.0"]
 build-backend = "uv_build"
 
 [tool.black]
@@ -32,3 +32,10 @@ target-version = ["py312"]
 include = ["src", "tests"]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
+
+[tool.pytest.ini_options]
+# Unit and integration tests share module basenames (e.g. test_adb_reverse.py).
+addopts = ["--import-mode=importlib"]
+markers = [
+    "integration: marks tests as integration tests that require containers/services (deselect with '-m \"not integration\"')",
+]

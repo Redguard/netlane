@@ -1,0 +1,19 @@
+# A Linux Docker host for the integration test stack on macOS.
+# Needs Parallels Desktop Pro or Business and the vagrant-parallels plugin.
+Vagrant.configure("2") do |config|
+  config.vm.box = "bento/ubuntu-26.04"
+  config.vm.box_version = "202606.01.0"
+  config.vm.hostname = "netlane-test"
+
+  # The repository, as the build context of the runner image.
+  config.vm.synced_folder "../../..", "/vagrant"
+
+  config.vm.provider "parallels" do |prl|
+    prl.name = "netlane-test"
+    prl.cpus = 4
+    prl.memory = 6144
+    prl.update_guest_tools = true
+  end
+
+  config.vm.provision "shell", path: "provision.sh"
+end

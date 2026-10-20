@@ -188,6 +188,8 @@ def test_up_applies_rules_for_all_app_uids_then_tears_down_on_ctrl_c(device):
     assert ("run", SERIAL, ["reverse", "--no-rebind", "tcp:8080", "tcp:8080"]) in (
         device["calls"]
     )
+    # The watcher is a device shell that only ends with the connection.
+    assert ("start", SERIAL, ["shell", "-n", mode.SLEEP_FOREVER]) in device["calls"]
     assert device["watcher"].terminated
     assert ("run", SERIAL, ["reverse", "--remove", "tcp:8080"]) in device["calls"]
     assert applied[-3:-1] == [

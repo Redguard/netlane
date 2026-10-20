@@ -1,0 +1,62 @@
+name: Package
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build & Smoke Test Package
+    needs: ci
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Build package (sdist and wheel)
+        run: uv build
+
+      - name: Smoke test built wheel in isolated environment
+        run: |
+          # Create clean isolated virtual environment
+          uv venv /tmp/smoke-env --python 3.12
+          # Install built wheel into isolated environment
+          uv pip install --python /tmp/smoke-env dist/*.whl
+          # Verify CLI entry point and package import work
+          /tmp/smoke-env/bin/netlane --help
+          /tmp/smoke-env/bin/python -c "import netlane; print(f'Successfully imported netlane from {netlane.__file__}')"
+
+      - name: Upload distribution packages
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: python-package-distributions
+          path: dist/
+
+  publish:
+    name: Publish (stub)
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-26.04
+    steps:
+      # TODO: publish the built distributions (e.g. PyPI Trusted Publishing).
+      - name: Publishing is not implemented yet
+        run: echo "Would publish ${{ github.ref_name }}, but publishing is not implemented yet."

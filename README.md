@@ -1,5 +1,8 @@
 # netlane
 
+[![Unit Tests](https://img.shields.io/github/check-runs/Redguard/netlane/main?nameFilter=Unit%20Tests&label=unit%20tests)](https://github.com/Redguard/netlane/actions/workflows/ci.yml?query=branch%3Amain)
+[![Integration Tests](https://img.shields.io/github/check-runs/Redguard/netlane/main?nameFilter=Integration%20Tests&label=integration%20tests)](https://github.com/Redguard/netlane/actions/workflows/ci.yml?query=branch%3Amain)
+
 netlane routes mobile device traffic during security analysis.
 Rules decide per connection whether traffic is forwarded to a local tool such as Burp Suite, passed through to the internet, or dropped/rejected.
 The idea behind this is to simplify traditional error-prone network interception setups encompassing VPNs, firewall rules and tunnels with a config file for most test scenarios.
@@ -232,9 +235,4 @@ For debugging, `-v` before the command shows executed commands and `--log <path>
 
 ## Development
 
-```bash
-uv sync
-uv run black .
-uv run pyright
-uv run pytest
-```
+See [docs/development.md](docs/development.md) for the development setup and how the unit and integration tests work.
