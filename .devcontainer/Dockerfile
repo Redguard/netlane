@@ -3,14 +3,6 @@ FROM mcr.microsoft.com/devcontainers/python:3.12-trixie
 # Install uv from Astral's official container image
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# Install tools for integration testing (adb, wireguard, netcat)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    adb \
-    wireguard-tools \
-    netcat-openbsd \
-    openssh-client \
-    && rm -rf /var/lib/apt/lists/*
-
 # Persist bash/zsh history
 ARG USERNAME=vscode
 RUN SNIPPET="export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" \

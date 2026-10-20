@@ -111,9 +111,11 @@ netlane/
 │           └── ubuntu/
 │               └── install.sh      # VPS bootstrapping script for wireguard_ssh_reverse
 └── tests/
-    ├── integration/                # Integration tests requiring container/service environments
-    │   ├── conftest.py             # SSH config, fixtures, and NetlaneRunner for container testing
-    │   ├── docker/                 # Container definitions for integration testing
+    ├── integration/                # Integration tests, run inside the container stack of compose.yml
+    │   ├── compose.yml             # The test stack: runner, VPS, Redroid, WireGuard client, remote host
+    │   ├── conftest.py             # Fixtures and NetlaneRunner for the stack
+    │   ├── docker/                 # Images of the stack's services
+    │   ├── vm/                     # Vagrant VM serving as the stack's Docker host on macOS
     │   ├── test_wireguard_ssh_reverse.py # Generic wireguard_ssh_reverse tests (setup, pair, up, down, rule targets) against the VPS container
     │   ├── test_adb_reverse.py     # Generic adb_reverse tests (up, down, rule targets) against the Redroid container
     │   ├── test_profile_jailed.py  # config.toml's jailed profile, with traffic of a WireGuard client
@@ -157,31 +159,15 @@ Run tests matching a specific expression:
 ```bash
 uv run pytest tests/unit -k "test_up"
 ```
-Run integration tests (requires container environment from `docker-compose.test.yml`):
+Run integration tests. They run inside the container stack of `tests/integration/compose.yml`. The Docker host needs the kernel modules listed in [docs/development.md](docs/development.md). On macOS use the Vagrant VM in `tests/integration/vm/`.
 ```bash
-# Start test containers (BINDER_MAJOR is required by every compose command on this file)
 export BINDER_MAJOR=$(awk '$2=="binder"{print $1}' /proc/devices)
-docker compose -f docker-compose.test.yml up -d
-
-# Run integration tests
-uv run pytest tests/integration
-
-# Teardown test containers
-docker compose -f docker-compose.test.yml down
+docker compose -f tests/integration/compose.yml run --rm --build runner
+docker compose -f tests/integration/compose.yml down -v
 ```
 
-> **Note on Architecture & Dev Containers**:
-> - The integration test VPS container (`tests/integration/docker/vps/Dockerfile`) is built from `ubuntu:26.04` with systemd enabled natively on both `amd64` and `arm64`.
-> - When running inside a VS Code Dev Container, port `2222` is exposed on the host machine. `tests/integration/conftest.py` automatically detects and uses `host.docker.internal` when `127.0.0.1` is unreachable.
-> - You can explicitly set the target VPS host via `NETLANE_TEST_VPS_HOST` (e.g. `NETLANE_TEST_VPS_HOST=127.0.0.1` or `host.docker.internal`).
-> - The `adb_reverse` tests run against the `redroid` container, which shares the Docker host's kernel. The host needs binder and the legacy iptables tables, otherwise the container does not boot or `iptables-restore` fails:
->   ```bash
->   sudo modprobe binder_linux devices=binder,hwbinder,vndbinder
->   sudo modprobe -a iptable_filter iptable_nat ip6table_filter ip6table_nat xt_owner xt_comment ipt_REJECT ip6t_REJECT
->   ```
-> - The `redroid` container is deliberately not `privileged`: its device cgroup only allows the binder major (`BINDER_MAJOR`), so it cannot create loop devices or reach other host devices. Keep it on an image with flattened APEX modules (up to `14.0.0`); newer ones need loop devices and do not boot under this restriction. Use the `_64only` variant: the multilib image's 32-bit zygote dies on GitHub's runners and takes the 64-bit zygote down with it, so Android never finishes booting.
-> - The device is reached over ADB on port `5555`. Override with `NETLANE_TEST_ADB_HOST`, `NETLANE_TEST_ADB_PORT`, and `NETLANE_TEST_ADB_ELEVATION` (default `su`).
-> - Tests of a mode skip when its container is not reachable. Set `NETLANE_TEST_REQUIRE_SERVICES=1` (as CI does) to fail instead.
+- `redroid` is not `privileged`. `BINDER_MAJOR` limits its device cgroup to the binder devices. Images newer than `14.0.0` need loop devices and do not boot. Use the `_64only` variant.
+- A test fails with the start command when its service is unreachable.
 
 
 ### Type Checking
@@ -306,26 +292,13 @@ Unit tests use `pytest` and execute in milliseconds without requiring real Andro
    - Test argument parsing, flag overrides (`--config`, `--log`, `--color`, `-v`), and subcommand execution in `tests/unit/test_cli.py`.
 
 ### Integration Testing Conventions (`tests/integration/`)
-Integration tests run against live containerized environments defined in `docker-compose.test.yml`:
-1. **VPS Container (`tests/integration/docker/vps/Dockerfile`)**:
-   - Runs Ubuntu 26.04 with systemd, OpenSSH server, and WireGuard.
-   - Ships without any authorized SSH key. Each test session generates a throwaway key pair and the `vps_server` fixture installs its public half with `docker exec` (container name overridable via `NETLANE_TEST_VPS_CONTAINER`), so the tests need the `docker` CLI.
-   - Automatically detected by `tests/integration/conftest.py` on `127.0.0.1` or `host.docker.internal` (for Dev Containers).
-2. **Android Container (`redroid` service)**:
-   - Runs Redroid (Android 14) with ADB exposed on port `5555`. Its shell is unprivileged, so the tests use `elevation = "su"`.
-   - The `adb_device` fixture connects ADB and waits for boot, `device_exec` runs root commands on the device for assertions, and `netlane_adb` provides a `NetlaneRunner` for the `rooted` profile.
-   - `device_send` sends a line from the device, as the ADB shell's uid or as root.
-3. **Remote Container (`tests/integration/docker/remote/Dockerfile`)**:
-   - Stands in for a host on the internet beyond the gateway or device. It answers on a few TCP and UDP ports and records what reached them, with the sender's address.
-   - The `remote` fixture provides its address and `Remote.peers`, which tells whether a sent line arrived. Rules that reject, drop or pass traffic through can only be verified against it, so assert on it instead of on a client's exit code alone.
-4. **WireGuard Client Container (`tests/integration/docker/client/Dockerfile`)**:
-   - Stands in for the mobile device with the WireGuard app. The `wg_client` fixture brings up a client config from `netlane pair` in it with `docker exec` (container name overridable via `NETLANE_TEST_CLIENT_CONTAINER`). The client reaches the gateway's WireGuard port over the test network and routes everything else through the tunnel, the test network included. `paired_client` pairs the `jailed` profile and connects such a client.
-   - `local_listener` stands in for the analyst's proxy on a local tunnel port. `WireguardClient.send` and `device_send` return a `Sent` with a unique payload to look for in the listener's and the remote's records.
-5. **Test Files**:
-   - `test_wireguard_ssh_reverse.py` and `test_adb_reverse.py` are the generic tests of a mode: its steps, lifecycle, refusals, hooks, and every rule target with real traffic. They define their own small profiles.
-   - `test_profile_jailed.py` and `test_profile_rooted.py` test the profiles of the repository's `config.toml` as shipped. The `shipped_config` fixture only replaces environment values in it (SSH host and user, ADB serial and elevation, and the placeholder app with the ADB shell's package), and fails if `config.toml` no longer contains them. Each file brings its profile up once per module and sends traffic for every rule. When a profile in `config.toml` changes, update these tests with it.
-6. **Reserved Ports**:
-   - Local ports `8080-8090` are reserved for integration test tunnels and listeners. Bind listeners to the loopback addresses (`127.0.0.1`, `::1`) only; `.devcontainer/devcontainer.json` excludes this range from VS Code auto-forwarding so they stay inside the Dev Container.
+Integration tests run inside the stack of `tests/integration/compose.yml`. Services are reached by name.
+1. **Runner** (`docker/runner/Dockerfile`): `pytest`, the CLI, `adb`, `wg`, `ssh`. ssh key and `known_hosts` come from the `keys` volume. Hosts the proxy listeners on `127.0.0.1` and `::1`, ports `8080-8090`.
+2. **VPS** (`docker/vps/Dockerfile`): Ubuntu 26.04, systemd, sshd with the stack's host key. Authorizes the stack's key for `ubuntu` at boot. Fixtures: `vps_server`, `vps_exec`, `setup_vps`.
+3. **Android** (`redroid` service): Redroid 14 at `redroid:5555`, unprivileged shell, `elevation = "su"`. Fixtures: `adb_device`, `device_exec`, `device_send`, `netlane_adb`.
+4. **Remote** (`docker/remote/Dockerfile`): mock internet host. Answers on a few TCP and UDP ports and records sender and line in `/received`. Fixture: `remote`; `Remote.peers` reads the record over ssh. Assert reject, drop and passthrough against it, not against exit codes alone.
+5. **WireGuard client** (`docker/client/Dockerfile`): mock mobile device. `wg_client` applies a client config from `pair` over ssh and routes all traffic into the tunnel, except to the gateway and replies to the runner. `paired_client` pairs `jailed` and connects.
+6. **Test files**: `test_wireguard_ssh_reverse.py`, `test_adb_reverse.py`: steps, lifecycle, refusals, hooks and rule targets with real traffic, with their own profiles. `test_profile_jailed.py`, `test_profile_rooted.py`: the shipped `config.toml` profiles. `shipped_config` only replaces host, user, serial, elevation and the placeholder app, and fails when `config.toml` changed. Update them with `config.toml`.
 
 
 ---

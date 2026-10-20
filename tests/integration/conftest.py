@@ -2,12 +2,10 @@ import os
 import queue
 import re
 import shlex
-import shutil
 import signal
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import uuid
@@ -18,203 +16,68 @@ from typing import Callable, Generator, Optional
 
 import pytest
 
+from netlane import APP_NAME
 from netlane.config import Config, load_config
 from netlane.modes import wireguard_ssh_reverse
 
 TESTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_DIR.parent.parent
 
+# The services of compose.yml, reached by name on its network.
+VPS_HOST = "vps"
+VPS_USER = "ubuntu"
+CLIENT_HOST = "client"
+REMOTE_HOST = "remote"
+ADB_SERIAL = "redroid:5555"
+# Redroid's adbd runs as the shell user and ships su.
+ADB_ELEVATION = "su"
 
-def is_port_open(host: str, port: int, timeout: float = 1.0) -> bool:
-    """Checks if a TCP port is open."""
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except (socket.timeout, ConnectionRefusedError, OSError):
-        return False
-
-
-def _get_default_gateway() -> Optional[str]:
-    """Extracts the default IPv4 gateway address from /proc/net/route if inside a Linux container."""
-    try:
-        route_file = Path("/proc/net/route")
-        if route_file.exists():
-            for line in route_file.read_text().splitlines():
-                fields = line.strip().split()
-                if len(fields) >= 3 and fields[1] == "00000000":
-                    val = int(fields[2], 16)
-                    return socket.inet_ntoa(val.to_bytes(4, byteorder="little"))
-    except Exception:
-        pass
-    return None
-
-
-def _detect_host(env_var: str, port: int) -> str:
-    """Finds the address a test container's published `port` is reachable on."""
-    if env_var in os.environ:
-        return os.environ[env_var]
-    if is_port_open("127.0.0.1", port, timeout=0.5):
-        return "127.0.0.1"
-    if is_port_open("host.docker.internal", port, timeout=0.5):
-        return "host.docker.internal"
-    gateway = _get_default_gateway()
-    if gateway and is_port_open(gateway, port, timeout=0.5):
-        return gateway
-    return "127.0.0.1"
-
-
-VPS_PORT = int(os.environ.get("NETLANE_TEST_VPS_PORT", "2222"))
-VPS_HOST = _detect_host("NETLANE_TEST_VPS_HOST", VPS_PORT)
-VPS_USER = os.environ.get("NETLANE_TEST_VPS_USER", "ubuntu")
-VPS_CONTAINER = os.environ.get("NETLANE_TEST_VPS_CONTAINER", "netlane-vps")
-
-ADB_PORT = int(os.environ.get("NETLANE_TEST_ADB_PORT", "5555"))
-ADB_HOST = _detect_host("NETLANE_TEST_ADB_HOST", ADB_PORT)
-ADB_SERIAL = f"{ADB_HOST}:{ADB_PORT}"
-# Redroid's adbd runs as the shell user and ships su. Set to "" for a device with root adbd.
-ADB_ELEVATION = os.environ.get("NETLANE_TEST_ADB_ELEVATION", "su")
-
-# The WireGuard client of the `wg_client` fixture, a container beyond the gateway.
-CLIENT_CONTAINER = os.environ.get("NETLANE_TEST_CLIENT_CONTAINER", "netlane-client")
 CLIENT_WG_IFACE = "wgclient"
 # Routing table holding the client's default routes into the tunnel.
 CLIENT_ROUTE_TABLE = 51820
 
-REMOTE_CONTAINER = os.environ.get("NETLANE_TEST_REMOTE_CONTAINER", "netlane-remote")
-
-# Stands in for the placeholder app of the shipped rooted profile. It runs as the
-# ADB shell's uid, so traffic sent from an unelevated shell is that app's traffic.
+# Stands in for the placeholder app of the shipped rooted profile.
+# It runs as the ADB shell's uid, so traffic sent from an unelevated shell is that app's traffic.
 ROOTED_APP = "com.android.shell"
 
-# Set to "1" (as CI does) to fail instead of skip when a test container is unavailable.
-REQUIRE_SERVICES = os.environ.get("NETLANE_TEST_REQUIRE_SERVICES") == "1"
+START_HINT = (
+    "Run the tests inside the stack: "
+    "docker compose -f tests/integration/compose.yml run --rm --build runner"
+)
 
 
-def _unavailable(reason: str) -> None:
-    """Skips the test, or fails it when the test containers are required."""
-    if REQUIRE_SERVICES:
-        pytest.fail(reason)
-    pytest.skip(reason)
-
-
-def _authorize_test_key(public_key: str) -> Optional[str]:
-    """Installs the session's public key in the VPS container. Returns an error message on failure."""
-    if shutil.which("docker") is None:
-        return "Docker ('docker') not found locally."
-    res = subprocess.run(
-        [
-            "docker",
-            "exec",
-            "-i",
-            "-u",
-            VPS_USER,
-            VPS_CONTAINER,
-            "sh",
-            "-c",
-            "umask 077 && mkdir -p ~/.ssh && cat > ~/.ssh/authorized_keys",
-        ],
-        input=public_key,
+def _ssh(host: str, script: str, check: bool = False) -> subprocess.CompletedProcess:
+    """Runs `script` with sh on a service of the stack."""
+    return subprocess.run(
+        ["ssh", host, "sh", "-s"],
+        input=script,
         capture_output=True,
         text=True,
-    )
-    return res.stderr.strip() if res.returncode != 0 else None
-
-
-@pytest.fixture(scope="session", autouse=True)
-def configure_ssh(tmp_path_factory):
-    """
-    Configures ~/.ssh/config so ssh/scp transparently use test keys and ports.
-    Yields the public half of a key pair generated for this test session.
-    """
-    ssh_dir = Path.home() / ".ssh"
-    ssh_dir.mkdir(parents=True, exist_ok=True)
-    config_file = ssh_dir / "config"
-
-    key_path = tmp_path_factory.mktemp("keys") / "id_ed25519"
-    subprocess.run(
-        [
-            "ssh-keygen",
-            "-q",
-            "-t",
-            "ed25519",
-            "-N",
-            "",
-            "-C",
-            "netlane-test",
-            "-f",
-            str(key_path),
-        ],
-        check=True,
+        check=check,
     )
 
-    marker = "# --- NETLANE TEST CONFIG ---"
-    block = f"""{marker}
-Host {VPS_HOST} netlane-vps
-    Port {VPS_PORT}
-    User {VPS_USER}
-    IdentityFile {key_path}
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
-    LogLevel ERROR
-{marker}
-"""
 
-    existing_content = config_file.read_text() if config_file.exists() else ""
-    if marker in existing_content:
-        # Replace existing test block
-        before, _, remainder = existing_content.partition(marker)
-        _, _, after = remainder.partition(marker)
-        new_content = before.rstrip() + "\n" + block + after.lstrip()
-    else:
-        new_content = existing_content + ("\n" if existing_content else "") + block
-
-    config_file.write_text(new_content)
-    config_file.chmod(0o600)
-
-    yield key_path.with_suffix(".pub").read_text()
-
-    # Clean up marker on teardown if desired
-    if config_file.exists():
-        content = config_file.read_text()
-        if marker in content:
-            before, _, remainder = content.partition(marker)
-            _, _, after = remainder.partition(marker)
-            cleaned = before.rstrip() + "\n" + after.lstrip()
-            config_file.write_text(cleaned.strip() + "\n")
+def _service_address(host: str) -> str:
+    """Address of a service on the stack's network. Fails the test if it is not running."""
+    try:
+        return socket.gethostbyname(host)
+    except OSError:
+        pytest.fail(f"Service '{host}' is not running. {START_HINT}")
 
 
 @pytest.fixture(scope="session")
-def vps_server(configure_ssh):
-    """
-    Ensures the VPS container or server is reachable.
-    Skips integration tests if the VPS is not available.
-    """
-    if not is_port_open(VPS_HOST, VPS_PORT, timeout=2.0):
-        _unavailable(
-            f"VPS server at {VPS_HOST}:{VPS_PORT} is not reachable. "
-            "Start the test environment with: docker compose -f docker-compose.test.yml up -d"
-        )
-
-    authorize_error = _authorize_test_key(configure_ssh)
-
-    # Verify SSH connection works
-    ssh_cmd = [
-        "ssh",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "ConnectTimeout=3",
-        f"{VPS_USER}@{VPS_HOST}",
-        "echo OK",
-    ]
-    res = subprocess.run(ssh_cmd, capture_output=True, text=True)
+def vps_server():
+    """Checks that the VPS accepts the stack's key over SSH."""
+    res = subprocess.run(
+        ["ssh", "-o", "ConnectTimeout=5", f"{VPS_USER}@{VPS_HOST}", "true"],
+        capture_output=True,
+        text=True,
+    )
     if res.returncode != 0:
-        reason = f"SSH connection to {VPS_USER}@{VPS_HOST}:{VPS_PORT} failed: {res.stderr.strip()}"
-        if authorize_error:
-            reason += f" (could not install the test key in container '{VPS_CONTAINER}': {authorize_error})"
-        _unavailable(reason)
-
-    return {"host": VPS_HOST, "port": VPS_PORT, "user": VPS_USER}
+        pytest.fail(
+            f"SSH to {VPS_USER}@{VPS_HOST} failed: {res.stderr.strip()}. {START_HINT}"
+        )
+    return {"host": VPS_HOST, "user": VPS_USER}
 
 
 @pytest.fixture(scope="session")
@@ -238,6 +101,17 @@ class NetlaneRunner:
     def __init__(self, config_path: Path):
         self.config_path = config_path
         self.config: Config = load_config(config_path)
+
+    def _cmd(self, *args: str) -> list[str]:
+        """The CLI with the configured config path and `args`."""
+        return [
+            sys.executable,
+            "-m",
+            APP_NAME,
+            "--config",
+            str(self.config_path),
+            *args,
+        ]
 
     def _run_cmd(
         self,
@@ -266,21 +140,13 @@ class NetlaneRunner:
         stdin: Optional[str] = None,
         check: bool = False,
     ) -> subprocess.CompletedProcess:
-        """Runs the `netlane` CLI with the configured config path and given arguments."""
-        cmd = [
-            "uv",
-            "run",
-            "netlane",
-            "--config",
-            str(self.config_path),
-            *args,
-        ]
-        return self._run_cmd(cmd, input_data=stdin, check=check)
+        """Runs the CLI with the given arguments."""
+        return self._run_cmd(self._cmd(*args), input_data=stdin, check=check)
 
     def setup(
         self, profile: str, distro: str = "ubuntu", check: bool = True
     ) -> subprocess.CompletedProcess:
-        """Runs `netlane setup`, automatically providing the confirmation string to stdin."""
+        """Runs the `setup` step, answering its confirmation prompt."""
         profile_obj = self.config.profiles.get(profile)
         if profile_obj is None:
             raise ValueError(f"Profile {profile} not found in config")
@@ -288,20 +154,7 @@ class NetlaneRunner:
         ssh_target = (
             f"{profile_obj.mode_opts.ssh_user}@{profile_obj.mode_opts.ssh_host}"
         )
-        cmd = [
-            "uv",
-            "run",
-            "netlane",
-            "--config",
-            str(self.config_path),
-            "-v",
-            "setup",
-            profile,
-            "--distro",
-            distro,
-        ]
-
-        # Feed target into stdin to answer the confirmation prompt
+        cmd = self._cmd("-v", "setup", profile, "--distro", distro)
         return self._run_cmd(cmd, input_data=f"{ssh_target}\n", check=check)
 
     def pair(
@@ -311,17 +164,8 @@ class NetlaneRunner:
         force: bool = True,
         check: bool = True,
     ) -> subprocess.CompletedProcess:
-        """Runs `netlane pair`."""
-        cmd = [
-            "uv",
-            "run",
-            "netlane",
-            "--config",
-            str(self.config_path),
-            "-v",
-            "pair",
-            profile,
-        ]
+        """Runs the `pair` step."""
+        cmd = self._cmd("-v", "pair", profile)
         if force:
             cmd.append("--force")
         if save_path:
@@ -338,25 +182,15 @@ class NetlaneRunner:
         check: bool = True,
     ) -> Generator[subprocess.Popen, None, None]:
         """
-        Runs `netlane up` as a background process and interrupts it on context exit.
+        Runs the `up` step as a background process and interrupts it on context exit.
 
         Leaving the context sends Ctrl-C and requires `up` to tear down on its own
-        and exit cleanly. `netlane down` only runs as a fallback when something
-        failed, so that a broken teardown is not hidden and later tests start clean.
+        and exit cleanly. `down` only runs as a fallback when something failed,
+        so that a broken teardown is not hidden and later tests start clean.
         Without `check`, `up` may exit with any code, e.g. when a test ended it.
         """
-        cmd = [
-            "uv",
-            "run",
-            "netlane",
-            "--config",
-            str(self.config_path),
-            "-v",
-            "up",
-            profile,
-        ]
         proc = subprocess.Popen(
-            cmd,
+            self._cmd("-v", "up", profile),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -428,7 +262,7 @@ class NetlaneRunner:
                     if exited
                     else f"failed to become ready within {ready_timeout}s"
                 )
-                raise RuntimeError(f"netlane up {reason}:\n{''.join(output)}")
+                raise RuntimeError(f"up {reason}:\n{''.join(output)}")
             yield proc
         except BaseException:
             _interrupt()
@@ -445,21 +279,11 @@ class NetlaneRunner:
                 if returncode is None
                 else f"exited with code {returncode}"
             )
-            raise RuntimeError(f"netlane up {reason} after Ctrl-C:\n{''.join(output)}")
+            raise RuntimeError(f"up {reason} after Ctrl-C:\n{''.join(output)}")
 
     def down(self, profile: str, check: bool = True) -> subprocess.CompletedProcess:
-        """Runs `netlane down`."""
-        cmd = [
-            "uv",
-            "run",
-            "netlane",
-            "--config",
-            str(self.config_path),
-            "-v",
-            "down",
-            profile,
-        ]
-        return self._run_cmd(cmd, check=check)
+        """Runs the `down` step."""
+        return self._run_cmd(self._cmd("-v", "down", profile), check=check)
 
 
 @pytest.fixture(scope="session")
@@ -475,31 +299,7 @@ ssh_user = "{vps_server['user']}"
 elevation = "sudo"
 tunnels = {{ proxy_main = 8080 }}
 """)
-    res = subprocess.run(
-        [
-            "uv",
-            "run",
-            "netlane",
-            "--config",
-            str(cfg),
-            "-v",
-            "setup",
-            "jailed",
-            "--distro",
-            "ubuntu",
-        ],
-        input=f"{vps_server['user']}@{vps_server['host']}\n",
-        capture_output=True,
-        text=True,
-    )
-    if res.stdout:
-        sys.stdout.write(res.stdout)
-        sys.stdout.flush()
-    if res.stderr:
-        sys.stderr.write(res.stderr)
-        sys.stderr.flush()
-    assert res.returncode == 0
-    return res
+    return NetlaneRunner(cfg).setup("jailed")
 
 
 @pytest.fixture
@@ -563,33 +363,21 @@ def _adb(*args: str, timeout: float = 30.0) -> subprocess.CompletedProcess:
 
 @pytest.fixture(scope="session")
 def adb_device():
-    """
-    Connects ADB to the Android container and waits until it has booted.
-    Skips integration tests if the device is not available.
-    """
-    start_hint = (
-        "Start the test environment with: "
-        "docker compose -f docker-compose.test.yml up -d"
-    )
-    if shutil.which("adb") is None:
-        _unavailable("ADB ('adb') not found locally.")
-    if not is_port_open(ADB_HOST, ADB_PORT, timeout=2.0):
-        _unavailable(f"Android device at {ADB_SERIAL} is not reachable. {start_hint}")
-
-    subprocess.run(["adb", "connect", ADB_SERIAL], capture_output=True, text=True)
-    # The package manager only answers once the system has booted.
-    deadline = time.time() + 90
-    booted = False
+    """Connects ADB to the Android container and waits until it has booted."""
+    _service_address(ADB_SERIAL.partition(":")[0])
+    deadline = time.time() + 180
     while time.time() < deadline:
+        # adbd only listens once Android is up.
+        subprocess.run(["adb", "connect", ADB_SERIAL], capture_output=True, text=True)
         res = _adb("shell", "-n", "getprop sys.boot_completed", timeout=10)
         if res.returncode == 0 and res.stdout.strip() == "1":
-            booted = True
-            break
+            return {"serial": ADB_SERIAL, "elevation": ADB_ELEVATION}
         time.sleep(2)
-    if not booted:
-        _unavailable(f"Android device at {ADB_SERIAL} did not finish booting.")
-
-    return {"serial": ADB_SERIAL, "elevation": ADB_ELEVATION}
+    pytest.fail(
+        f"Android device at {ADB_SERIAL} did not finish booting. "
+        "Redroid needs binder in the Docker host's kernel: "
+        "sudo modprobe binder_linux devices=binder,hwbinder,vndbinder"
+    )
 
 
 def _device_exec(
@@ -737,12 +525,7 @@ class Remote:
         """
         deadline = time.monotonic() + wait
         while True:
-            res = subprocess.run(
-                ["docker", "exec", REMOTE_CONTAINER, "cat", "/received"],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
+            res = _ssh(REMOTE_HOST, "cat /received", check=True)
             records = [line.split(" ", 2) for line in res.stdout.splitlines()]
             peers = [r[1] for r in records if [r[0], r[2]] == [endpoint, payload]]
             if peers or time.monotonic() >= deadline:
@@ -750,35 +533,10 @@ class Remote:
             time.sleep(0.2)
 
 
-def _container_address(container: str, role: str) -> str:
-    """Address of a test container on the test network. Skips the test if it is not running."""
-    if shutil.which("docker") is None:
-        _unavailable("Docker ('docker') not found locally.")
-    res = subprocess.run(
-        [
-            "docker",
-            "inspect",
-            "-f",
-            "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
-            container,
-        ],
-        capture_output=True,
-        text=True,
-    )
-    address = res.stdout.strip()
-    if res.returncode != 0 or not address:
-        _unavailable(
-            f"{role} container '{container}' is not running. "
-            "Start the test environment with: "
-            "docker compose -f docker-compose.test.yml up -d"
-        )
-    return address
-
-
 @pytest.fixture(scope="session")
 def remote() -> Remote:
-    """The remote container. Skips integration tests if it is not available."""
-    return Remote(_container_address(REMOTE_CONTAINER, "Remote"))
+    """The remote container."""
+    return Remote(_service_address(REMOTE_HOST))
 
 
 @pytest.fixture(scope="session")
@@ -865,12 +623,7 @@ class WireguardClient:
 
 def _client_exec(script: str, check: bool = False) -> subprocess.CompletedProcess:
     """Runs a script in the WireGuard client container."""
-    return subprocess.run(
-        ["docker", "exec", CLIENT_CONTAINER, "bash", "-c", script],
-        capture_output=True,
-        text=True,
-        check=check,
-    )
+    return _ssh(CLIENT_HOST, script, check)
 
 
 def _remove_wg_client() -> None:
@@ -878,21 +631,22 @@ def _remove_wg_client() -> None:
     _client_exec(f"ip link del {CLIENT_WG_IFACE}")
     for family in ("-4", "-6"):
         _client_exec(f"ip {family} rule del table {CLIENT_ROUTE_TABLE}")
+    _client_exec('ip -4 rule del to "${SSH_CLIENT%% *}" lookup main')
 
 
 @pytest.fixture(scope="session")
 def wg_client(vps_exec):
     """
-    Factory for a WireGuard client connected with a client config from `netlane pair`.
+    Factory for a WireGuard client connected with a client config from `pair`.
 
     The client is a container of its own, standing in for the mobile device. It
     reaches the gateway's WireGuard port over the network and routes everything
     else through the tunnel, as the WireGuard app does with `AllowedIPs` of all.
     """
-    _container_address(CLIENT_CONTAINER, "WireGuard client")
-    # The client config has the address the tests reach the VPS on, which is a
-    # published port. The client is on the VPS's network and uses it directly.
-    gateway = _container_address(VPS_CONTAINER, "VPS")
+    _service_address(CLIENT_HOST)
+    # The client config has the name the tests reach the VPS by.
+    # The client is on the VPS's network and uses its address directly.
+    gateway = _service_address(VPS_HOST)
 
     @contextmanager
     def _connect(client_conf: str) -> Generator[WireguardClient, None, None]:
@@ -924,6 +678,8 @@ def wg_client(vps_exec):
             f"ip -6 route add default dev {iface} table {table}",
             f"ip -4 rule add not to {gateway} table {table}",
             f"ip -6 rule add table {table}",
+            # Replies to the runner's ssh sessions stay out of the tunnel as well.
+            'ip -4 rule add to "${SSH_CLIENT%% *}" lookup main',
         ]
         _remove_wg_client()
         try:

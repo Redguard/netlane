@@ -1,7 +1,7 @@
 # netlane
 
-[![Unit Tests](https://img.shields.io/github/check-runs/bernhste/netlane/main?nameFilter=Unit%20Tests&label=unit%20tests)](https://github.com/bernhste/netlane/actions/workflows/ci.yml?query=branch%3Amain)
-[![Integration Tests](https://img.shields.io/github/check-runs/bernhste/netlane/main?nameFilter=Integration%20Tests&label=integration%20tests)](https://github.com/bernhste/netlane/actions/workflows/ci.yml?query=branch%3Amain)
+[![Unit Tests](https://img.shields.io/github/check-runs/Redguard/netlane/main?nameFilter=Unit%20Tests&label=unit%20tests)](https://github.com/Redguard/netlane/actions/workflows/ci.yml?query=branch%3Amain)
+[![Integration Tests](https://img.shields.io/github/check-runs/Redguard/netlane/main?nameFilter=Integration%20Tests&label=integration%20tests)](https://github.com/Redguard/netlane/actions/workflows/ci.yml?query=branch%3Amain)
 
 netlane routes mobile device traffic during security analysis.
 Rules decide per connection whether traffic is forwarded to a local tool such as Burp Suite, passed through to the internet, or dropped/rejected.

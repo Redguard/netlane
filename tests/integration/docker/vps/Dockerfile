@@ -3,13 +3,11 @@ FROM ubuntu:26.04
 # Avoid interactive prompts during apt operations
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install systemd, OpenSSH server, sudo, curl, iproute2
 RUN apt-get update && apt-get install -y --no-install-recommends \
     systemd \
     systemd-sysv \
     openssh-server \
     sudo \
-    curl \
     iproute2 \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -32,17 +30,13 @@ RUN if ! id -u ubuntu >/dev/null 2>&1; then \
     fi && \
     echo 'ubuntu ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 
-# Configure SSH for key-based authentication. The test session installs its own
-# public key into authorized_keys (see tests/integration/conftest.py).
-RUN mkdir -p /home/ubuntu/.ssh /var/run/sshd && \
-    chmod 700 /home/ubuntu/.ssh && \
-    chown -R ubuntu:ubuntu /home/ubuntu/.ssh
+# sshd uses the stack's host key and authorizes its client key at boot.
+COPY hostkey.conf /etc/ssh/sshd_config.d/10-hostkey.conf
+COPY authorize-key.service /etc/systemd/system/
+RUN mkdir -p /var/run/sshd && systemctl enable authorize-key ssh
 
 # Prevent pam_nologin from blocking non-root SSH logins during container startup
 RUN sed -i '/pam_nologin.so/d' /etc/pam.d/sshd
-
-# Enable SSH service in systemd
-RUN systemctl enable ssh
 
 STOPSIGNAL SIGRTMIN+3
 

@@ -1,7 +1,6 @@
 # Development
 
 Development and packaging use [uv](https://docs.astral.sh/uv/).
-The repository ships a [dev container](../.devcontainer/devcontainer.json) with everything the tests need (`uv`, `adb`, `wg`, `ssh` and access to the host's Docker).
 
 ```bash
 uv sync
@@ -19,41 +18,61 @@ uv run pytest tests/unit
 
 ## Integration tests
 
-Integration tests run the real `netlane` command against containers that stand in for the VPS, the Android device and a host on the internet.
+Integration tests run the real CLI against a container stack with a VPS, an Android device, a WireGuard client and a remote host.
+Everything runs inside the stack of [tests/integration/compose.yml](../tests/integration/compose.yml), `pytest` included.
+The Docker host needs Docker and the kernel modules below and nothing else.
+Nothing is published or configured on it.
+
+### Docker host
+
+Redroid shares the host's kernel. These modules must be loaded on it.
 
 ```bash
-# Start the test containers
-export BINDER_MAJOR=$(awk '$2=="binder"{print $1}' /proc/devices)
-docker compose -f docker-compose.test.yml up -d
-
-uv run pytest tests/integration
-
-docker compose -f docker-compose.test.yml down
+sudo modprobe binder_linux devices=binder,hwbinder,vndbinder
+sudo modprobe -a iptable_filter iptable_nat ip6table_filter ip6table_nat xt_owner xt_comment ipt_REJECT ip6t_REJECT
 ```
 
-> [!NOTE]
-> The `adb_reverse` integration tests run against a [Redroid](https://github.com/remote-android/redroid-doc) container, which needs these kernel modules loaded on the Docker host:
->
-> ```bash
-> sudo modprobe binder_linux devices=binder,hwbinder,vndbinder
-> sudo modprobe -a iptable_filter iptable_nat ip6table_filter ip6table_nat xt_owner xt_comment ipt_REJECT ip6t_REJECT
-> ```
->
-> The container is not privileged. `BINDER_MAJOR` grants it access to the binder devices only, so it has to be set for every `docker compose` command on this file.
+On Ubuntu they ship with `linux-modules-extra-$(uname -r)`. The tests never load modules.
+Docker Desktop cannot run the stack. Its VM kernel has no binder and loads no modules. See [macOS](#macos).
 
-Tests whose container is not reachable are skipped. Set `NETLANE_TEST_REQUIRE_SERVICES=1` (as CI does) to make them fail instead.
+### Running
+
+```bash
+export BINDER_MAJOR=$(awk '$2=="binder"{print $1}' /proc/devices)
+docker compose -f tests/integration/compose.yml run --rm --build runner
+docker compose -f tests/integration/compose.yml down -v
+```
+
+`BINDER_MAJOR` limits the Redroid container's device cgroup to the binder devices. Every compose command on this file needs it.
+Arguments after `runner` replace the pytest command, for example `runner pytest tests/integration/test_adb_reverse.py -k lifecycle`.
+CI runs the same commands. See [ci.yml](../.github/workflows/ci.yml).
+
+### macOS
+
+The stack runs in a Linux VM. [tests/integration/vm/Vagrantfile](../tests/integration/vm/Vagrantfile) defines one for Parallels Desktop.
+This needs Parallels Desktop Pro or Business, [Vagrant](https://developer.hashicorp.com/vagrant/install) and the [vagrant-parallels](https://github.com/Parallels/vagrant-parallels) plugin.
+
+```bash
+vagrant plugin install vagrant-parallels
+cd tests/integration/vm
+vagrant up --no-destroy-on-error
+vagrant provision
+vagrant ssh
+```
+
+Inside the VM the repository is mounted at `/media/psf/vagrant`. Run the commands of [Running](#running) there.
+`vagrant halt` stops the VM. `vagrant destroy` deletes it. [provision.sh](../tests/integration/vm/provision.sh) also prepares any other Ubuntu VM.
 
 ### Test environment
 
 ```mermaid
 flowchart LR
-    subgraph Dev["Dev container"]
-        Pytest["pytest"]
-        Netlane["netlane"]
-        Proxy["Proxy listener<br/>(stands in for Burp)"]
-    end
-
-    subgraph Net["Docker network netlane-test"]
+    subgraph Stack["Container stack (compose.yml)"]
+        subgraph Runner["Runner container"]
+            Pytest["pytest"]
+            Netlane["CLI"]
+            Proxy["Proxy listener<br/>(stands in for Burp)"]
+        end
         Client["Client container<br/>(mock WireGuard device)"]
         VPS["VPS container<br/>(WireGuard + nftables)"]
         Redroid["Android iptables<br/>(Redroid container)"]
@@ -64,8 +83,9 @@ flowchart LR
     Netlane -->|"SSH: setup, pair, up, down"| VPS
     Netlane -->|"ADB: up, down"| Redroid
 
-    Pytest -.->|"mock traffic via docker exec"| Client
+    Pytest -.->|"mock traffic via ssh"| Client
     Pytest -.->|"mock traffic via adb shell"| Redroid
+    Pytest -.->|"records via ssh"| Remote
 
     Client -->|WireGuard| VPS
     VPS -->|passthrough| Remote
@@ -79,49 +99,38 @@ flowchart LR
     style Proxy fill:#ff4d4d,stroke:#b30000,stroke-width:2px,color:#ffffff
 ```
 
-Blue is what is under test: `netlane` and the gateway and device it configures. Everything else is a mock around it.
-Solid arrows are what `netlane` sets up and the paths traffic takes, dashed arrows are the tests injecting mock traffic.
+Blue is under test. That is the CLI and the gateway and device it configures. Everything else is a mock.
+Solid arrows show what the CLI sets up and the paths traffic takes. Dashed arrows show the tests injecting traffic and reading records.
 
-| Part | Role in the tests |
+| Service | Role |
 | --- | --- |
-| Dev container | Runs `pytest`, which calls `netlane` exactly as an analyst would. Also hosts the listener on the tunnel port (e.g. `8080`), standing in for the analyst's proxy. |
-| VPS container (`netlane-vps`) | Ubuntu with systemd and sshd, the gateway of `wireguard_ssh_reverse`. Reached over SSH on port `2222`. |
-| Client container (`netlane-client`) | The mobile device of `wireguard_ssh_reverse`: a WireGuard client that sends all of its traffic through the gateway. |
-| Redroid container (`netlane-redroid`) | Rooted Android, the device of `adb_reverse`. Reached over ADB on port `5555`. |
-| Remote container (`netlane-remote`) | A host on the "internet". Answers `pong` on a few TCP/UDP ports and records what reached it and from which address. |
+| `keys` | Generates the stack's SSH client key, host key and `known_hosts` into the `keys` volume and exits. |
+| `runner` | Runs `pytest` and the CLI. The repository is copied in at build time. Hosts the proxy listeners on the tunnel ports. |
+| `vps` | Ubuntu with systemd and sshd. The gateway of `wireguard_ssh_reverse`. |
+| `client` | WireGuard client. The mobile device of `wireguard_ssh_reverse`. Sends all traffic through the gateway. |
+| `redroid` | Rooted Android. The device of `adb_reverse`. Reached as `redroid:5555`. |
+| `remote` | Host on the "internet". Answers `pong` on a few TCP and UDP ports and records sender and line. |
 
-The test containers are siblings of the dev container on the host's Docker daemon, not children of it. The tests therefore reach the VPS and Redroid through their published ports, on `127.0.0.1` or `host.docker.internal`, whichever answers, and drive the client and remote containers with `docker exec`. Outside of a dev container (as in CI) the picture is the same, with `pytest` and `netlane` running directly on the host.
+The runner reaches the VPS and Redroid by service name. It drives the client and remote over ssh with the keys of the `keys` volume and host key checking on.
 
 ### How traffic is mocked
 
-Each test sends a line with a unique payload and then checks where it ended up: at the proxy listener (tunnel), at the remote container (passthrough) or nowhere (reject/drop).
+Each test sends a line with a unique payload and checks where it ended up.
+A tunneled line reaches the proxy listener. A passed line reaches the remote container. A rejected or dropped line reaches nothing.
 
-- **`wireguard_ssh_reverse`**: The client container stands in for the phone with the WireGuard app. The tests bring up the client config from `netlane pair` in it and send from it with `docker exec`. It reaches the gateway's WireGuard port over the test network and routes everything else through the tunnel, so no traffic can reach the remote container around the gateway.
-- **`adb_reverse`**: The tests send from the device itself with `adb shell nc`. Sent unelevated, a line is traffic of the ADB shell's package (`com.android.shell`), which the tests use as the app in scope. Sent as root, it is traffic of another app.
+In `wireguard_ssh_reverse` the client container applies the client config from `pair` and sends with bash over ssh.
+All of its traffic enters the tunnel, except packets to the gateway's WireGuard port and replies to the runner.
+
+In `adb_reverse` the device sends with `adb shell nc`.
+Sent unelevated, a line is traffic of the ADB shell's package `com.android.shell`, the app in scope. Sent as root, it is traffic of another app.
 
 ### Test suites
 
-| File | What it covers |
+| File | Covers |
 | --- | --- |
-| [test_wireguard_ssh_reverse.py](../tests/integration/test_wireguard_ssh_reverse.py) | `setup`, `pair`, `up`, `down` and each rule target against the VPS container. Also the teardown of a failed `up` and a matrix of rules that `nft` has to accept. |
-| [test_adb_reverse.py](../tests/integration/test_adb_reverse.py) | `up`, `down` and each rule target against the Redroid container. Also the teardown of a failed `up` and a matrix of rules that `iptables` has to accept. |
-| [test_profile_jailed.py](../tests/integration/test_profile_jailed.py) | The `jailed` profile of the shipped [config.toml](../config.toml), with traffic of a WireGuard client. |
-| [test_profile_rooted.py](../tests/integration/test_profile_rooted.py) | The `rooted` profile of the shipped [config.toml](../config.toml), with traffic of the Android device. |
+| [test_wireguard_ssh_reverse.py](../tests/integration/test_wireguard_ssh_reverse.py) | `setup`, `pair`, `up`, `down`, each rule target, teardown of a failed `up`, a matrix of rules `nft` has to accept. |
+| [test_adb_reverse.py](../tests/integration/test_adb_reverse.py) | `up`, `down`, each rule target, teardown of a failed `up`, a matrix of rules `iptables` has to accept. |
+| [test_profile_jailed.py](../tests/integration/test_profile_jailed.py) | The `jailed` profile of the shipped [config.toml](../config.toml) with traffic of a WireGuard client. |
+| [test_profile_rooted.py](../tests/integration/test_profile_rooted.py) | The `rooted` profile of the shipped [config.toml](../config.toml) with traffic of the Android device. |
 
 The fixtures live in [conftest.py](../tests/integration/conftest.py).
-
-### Using other targets
-
-The tests find the containers on their own. These environment variables point them at something else, e.g. a real VPS or device:
-
-| Variable | Default |
-| --- | --- |
-| `NETLANE_TEST_VPS_HOST` | auto-detected |
-| `NETLANE_TEST_VPS_PORT` | `2222` |
-| `NETLANE_TEST_VPS_USER` | `ubuntu` |
-| `NETLANE_TEST_VPS_CONTAINER` | `netlane-vps` |
-| `NETLANE_TEST_ADB_HOST` | auto-detected |
-| `NETLANE_TEST_ADB_PORT` | `5555` |
-| `NETLANE_TEST_ADB_ELEVATION` | `su` |
-| `NETLANE_TEST_CLIENT_CONTAINER` | `netlane-client` |
-| `NETLANE_TEST_REMOTE_CONTAINER` | `netlane-remote` |

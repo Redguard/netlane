@@ -1,0 +1,11 @@
+# The services of compose.yml, with the keys of the `keys` volume.
+Host vps
+    User ubuntu
+
+Host client remote
+    User root
+
+Host *
+    IdentityFile /keys/id_ed25519
+    UserKnownHostsFile /keys/known_hosts
+    StrictHostKeyChecking yes

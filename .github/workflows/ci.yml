@@ -22,10 +22,10 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
           python-version: "3.12"
@@ -53,10 +53,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
@@ -71,60 +71,31 @@ jobs:
     name: Integration Tests
     runs-on: ubuntu-26.04
     env:
-      # A missing container must fail the job instead of skipping its tests.
-      NETLANE_TEST_REQUIRE_SERVICES: "1"
+      COMPOSE_FILE: tests/integration/compose.yml
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: uv sync --frozen
-
-      - name: Install local tools (wg, adb) and load kernel modules for the containers
+      - name: Load kernel modules for the containers
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends wireguard-tools adb
           # The containers share the runner's kernel and cannot load modules themselves.
-          # redroid needs binder to boot and the legacy iptables tables for netlane's rules.
+          # redroid needs binder and the legacy iptables tables, the VPS WireGuard and nftables.
           sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"
-          # The redroid container is only granted the binder devices (dynamic major).
-          echo "BINDER_MAJOR=$(awk '$2=="binder"{print $1}' /proc/devices)" >> "$GITHUB_ENV"
           sudo modprobe -a iptable_filter iptable_nat ip6table_filter ip6table_nat \
             xt_owner xt_comment ipt_REJECT ip6t_REJECT
-          # The VPS needs WireGuard and the nftables expressions netlane uses.
           sudo modprobe -a wireguard nf_tables nft_ct nft_chain_nat nft_nat nft_masq \
             nft_reject_inet
-
-      - name: Start test containers
-        run: docker compose -f docker-compose.test.yml up -d --build
-
-      - name: Wait for VPS SSH
-        run: |
-          timeout 60 bash -c \
-            'until docker exec netlane-vps systemctl is-active --quiet ssh; do sleep 1; done'
-
-      - name: Wait for Android boot
-        run: |
-          timeout 180 bash -c '
-            until [ "$(adb -s 127.0.0.1:5555 shell -n getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ]; do
-              adb connect 127.0.0.1:5555 >/dev/null
-              sleep 2
-            done'
+          # The redroid container is only granted the binder devices (dynamic major).
+          echo "BINDER_MAJOR=$(awk '$2=="binder"{print $1}' /proc/devices)" >> "$GITHUB_ENV"
 
       - name: Run integration tests
-        run: uv run pytest tests/integration -rs
+        run: docker compose run --rm --build runner
 
       - name: Show container logs
         if: failure()
-        run: docker compose -f docker-compose.test.yml logs --tail 200
+        run: docker compose logs --tail 200
 
-      - name: Teardown test containers
+      - name: Remove test containers
         if: always()
-        run: docker compose -f docker-compose.test.yml down -v
+        run: docker compose down -v

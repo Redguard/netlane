@@ -3,9 +3,6 @@
   "build": {
     "dockerfile": "Dockerfile"
   },
-  "runArgs": [
-    "--add-host=host.docker.internal:host-gateway"
-  ],
   "features": {
     "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
       "moby": false
@@ -14,12 +11,6 @@
   "mounts": [
     "source=netlane-bashhistory,target=/commandhistory,type=volume"
   ],
-  "portsAttributes": {
-    "8080-8090": {
-      "label": "netlane integration tests",
-      "onAutoForward": "ignore"
-    }
-  },
   "remoteUser": "vscode",
   "remoteEnv": {
     "PATH": "${containerWorkspaceFolder}/.venv/bin:${containerEnv:PATH}"
