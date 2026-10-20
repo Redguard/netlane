@@ -76,13 +76,10 @@ def test_up_and_down_lifecycle(netlane_adb, device_exec, adb_reverse_list):
 def test_tunnel_redirects_traffic_to_local_port(
     netlane_adb, device_exec, local_listener
 ):
-    with local_listener(8080) as received:
-        with netlane_adb.up("rooted"):
-            # 192.0.2.1 is unroutable (TEST-NET-1), only the DNAT rule can answer.
-            # nc exits on stdin EOF, keep it open until the reply made it back.
-            res = device_exec(
-                "(echo ping; sleep 2) | nc -w 5 192.0.2.1 80", check=False
-            )
+    with local_listener(8080) as received, netlane_adb.up("rooted"):
+        # 192.0.2.1 is unroutable (TEST-NET-1), only the DNAT rule can answer.
+        # nc exits on stdin EOF, keep it open until the reply made it back.
+        res = device_exec("(echo ping; sleep 2) | nc -w 5 192.0.2.1 80", check=False)
 
     assert received == [b"ping\n"]
     assert "pong" in res.stdout
@@ -93,12 +90,14 @@ def test_rule_targets_and_default_deny(
 ):
     cfg = tmp_path / "targets_config.toml"
     # The tunnel rule is restricted to IPv4, the container kernel may lack IPv6 NAT.
-    cfg.write_text(adb_reverse_config("""
+    cfg.write_text(
+        adb_reverse_config("""
   { name = "Drop", protocol = ["tcp"], dport = [8443], target = "action:drop" },
   { name = "Reject", protocol = ["tcp"], dport = [443], target = "action:reject" },
   { name = "Redirect HTTP", daddr = ["0.0.0.0/0"], protocol = ["tcp"], dport = [80], target = "tunnel:proxy_main" },
   { name = "Pass DNS", protocol = ["udp"], dport = [53], target = "action:passthrough" },
-"""))
+""")
+    )
     runner = create_netlane(cfg)
     runner.down("rooted", check=False)
 
@@ -170,10 +169,12 @@ def test_app_rule_resolves_package_uids(
     adb_reverse_config, tmp_path, device_exec, create_netlane
 ):
     app_cfg = tmp_path / "app_config.toml"
-    app_cfg.write_text(adb_reverse_config("""
+    app_cfg.write_text(
+        adb_reverse_config("""
   { name = "Reject shell", app = ["com.android.shell"], target = "action:reject" },
   { name = "Default Route", target = "action:passthrough" },
-"""))
+""")
+    )
     runner = create_netlane(app_cfg)
 
     # The shell package always runs as the fixed AID_SHELL uid
@@ -191,9 +192,11 @@ def test_up_refuses_when_app_not_installed(
     adb_reverse_config, tmp_path, device_exec, create_netlane
 ):
     app_cfg = tmp_path / "missing_app_config.toml"
-    app_cfg.write_text(adb_reverse_config("""
+    app_cfg.write_text(
+        adb_reverse_config("""
   { name = "Reject missing", app = ["com.example.not.installed"], target = "action:reject" },
-"""))
+""")
+    )
     runner = create_netlane(app_cfg)
 
     res = runner.run("up", "rooted")
@@ -208,13 +211,16 @@ def test_lifecycle_hooks_executed(
     adb_reverse_config, tmp_path, device_exec, create_netlane
 ):
     hook_cfg = tmp_path / "hooks_config.toml"
-    hook_cfg.write_text(adb_reverse_config(tunnels="test_port = 8085") + """
+    hook_cfg.write_text(
+        adb_reverse_config(tunnels="test_port = 8085")
+        + """
 [profiles.rooted.hooks]
 pre_up = "touch /data/local/tmp/hook_pre_up"
 post_up = "touch /data/local/tmp/hook_post_up"
 pre_down = "touch /data/local/tmp/hook_pre_down"
 post_down = "touch /data/local/tmp/hook_post_down"
-""")
+"""
+    )
 
     runner = create_netlane(hook_cfg)
     device_exec(f"rm -f {HOOK_FILES}")

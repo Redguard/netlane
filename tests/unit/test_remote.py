@@ -18,7 +18,8 @@ def calls(monkeypatch):
         recorded.append(cmd)
         if cmd[0] == "scp":
             # The file name is relative to cwd.
-            assert cwd is not None and (cwd / cmd[1]).is_file()
+            assert cwd is not None
+            assert (cwd / cmd[1]).is_file()
         stdout = f"{TMP}\n".encode() if cmd[-1] == "mktemp" else b""
         return subprocess.CompletedProcess(cmd, 0, stdout=stdout)
 
@@ -27,7 +28,7 @@ def calls(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "options, expected",
+    ("options", "expected"),
     [
         pytest.param({}, ["ssh", TARGET, "a && b"], id="plain"),
         pytest.param(
@@ -62,7 +63,8 @@ def test_run_script_uploads_to_temp_file_runs_and_removes_it(calls):
 
     mktemp, scp, run = calls
     assert mktemp == ["ssh", TARGET, "mktemp"]
-    assert scp[0] == "scp" and scp[2] == f"{TARGET}:{TMP}"
+    assert scp[0] == "scp"
+    assert scp[2] == f"{TARGET}:{TMP}"
     # A bare file name, as some scp builds read a drive letter like C: as a host.
     assert scp[1] == Path(scp[1]).name
     assert run == [
@@ -74,7 +76,7 @@ def test_run_script_uploads_to_temp_file_runs_and_removes_it(calls):
 
 
 @pytest.mark.parametrize(
-    "target, scp_target",
+    ("target", "scp_target"),
     [
         pytest.param(TARGET, f"{TARGET}:{TMP}", id="hostname"),
         pytest.param("ubuntu@2001:db8::1", f"ubuntu@[2001:db8::1]:{TMP}", id="ipv6"),

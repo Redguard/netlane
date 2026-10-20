@@ -47,12 +47,12 @@ def test_confirm_install_continues_on_matching_target(monkeypatch, capsys):
 )
 def test_confirm_install_aborts(monkeypatch, stdin):
     monkeypatch.setattr("sys.stdin", io.StringIO(stdin))
-    with pytest.raises(StepError, match="Aborted."):
+    with pytest.raises(StepError, match=r"Aborted\."):
         mode.confirm_install(TARGET, SCRIPT)
 
 
 @pytest.mark.parametrize(
-    "state, message",
+    ("state", "message"),
     [
         pytest.param({"set_up": False}, "Run 'setup jailed' first", id="not set up"),
         pytest.param(
@@ -68,7 +68,7 @@ def test_up_refuses(server, state, message):
 
 
 @pytest.mark.parametrize(
-    "state, force, message",
+    ("state", "force", "message"),
     [
         pytest.param(
             {"set_up": False}, False, "Run 'setup jailed' first", id="not set up"
@@ -228,7 +228,7 @@ def test_up_stops_tunnel_and_tears_down_on_ctrl_c(server, monkeypatch, caplog):
 
 
 @pytest.mark.parametrize(
-    "exit_code, succeeds",
+    ("exit_code", "succeeds"),
     [
         pytest.param(0, True, id="deleted"),
         pytest.param(1, True, id="nothing to delete"),
@@ -251,7 +251,9 @@ def test_flush_conntrack_tolerates_nothing_to_delete(
 
     mode._flush_conntrack(TARGET, "sudo")
     result = subprocess.run(
-        ["sh", "-c", commands[0]], env={"PATH": f"{tmp_path}:/usr/bin:/bin"}
+        ["sh", "-c", commands[0]],
+        env={"PATH": f"{tmp_path}:/usr/bin:/bin"},
+        check=False,
     )
 
     assert (result.returncode == 0) == succeeds
@@ -296,7 +298,7 @@ def test_elevated_commands_get_terminal(ssh_commands, step, elevation):
     profile = replace(
         PROFILE,
         mode_opts=replace(PROFILE.mode_opts, elevation=elevation),
-        hooks={hook: "true" for hook in ("pre_up", "post_up", "pre_down", "post_down")},
+        hooks=dict.fromkeys(("pre_up", "post_up", "pre_down", "post_down"), "true"),
     )
 
     RUN_STEP[step](profile)
@@ -326,7 +328,7 @@ def test_script_does_not_hardcode_shared_values(value):
 
 
 @pytest.mark.parametrize(
-    "host, endpoint",
+    ("host", "endpoint"),
     [
         pytest.param("vps.example.ch", "vps.example.ch:51820", id="hostname"),
         pytest.param("203.0.113.5", "203.0.113.5:51820", id="ipv4"),
@@ -342,7 +344,7 @@ def test_client_conf_endpoint(monkeypatch, host, endpoint):
 
 
 @pytest.mark.parametrize(
-    "ports, expected",
+    ("ports", "expected"),
     [
         pytest.param(
             [8080],

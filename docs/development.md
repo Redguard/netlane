@@ -4,8 +4,10 @@ Development and packaging use [uv](https://docs.astral.sh/uv/).
 
 ```bash
 uv sync
-uv run black .
+uv run ruff check .
+uv run ruff format .
 uv run pyright
+uv run zizmor .
 ```
 
 ## Unit tests

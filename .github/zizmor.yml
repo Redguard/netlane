@@ -1,0 +1,5 @@
+rules:
+  dependabot-cooldown:
+    config:
+      # Matches default-days in dependabot.yml.
+      days: 3

@@ -1,12 +1,11 @@
 import json
+import logging
 import os
 import subprocess
 import sys
-import logging
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from netlane import APP_NAME
 
@@ -75,7 +74,7 @@ class JsonFormatter(logging.Formatter):
 
 
 def setup_logging(
-    verbose: bool, color: str, log_file: Optional[Path], context: dict[str, str]
+    verbose: bool, color: str, log_file: Path | None, context: dict[str, str]
 ):
     """The console shows DEBUG only if `verbose`, `log_file` always gets everything."""
     formatter = ColorFormatter if use_color(sys.stdout, color) else logging.Formatter

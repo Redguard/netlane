@@ -1,4 +1,4 @@
-from typing import Dict, Iterable, List, Optional, Tuple
+from collections.abc import Iterable
 
 from netlane.config import (
     Action,
@@ -30,7 +30,7 @@ def generate_nft_rules(
             f"nftables backend only supports wireguard_ssh_reverse, got {profile.mode}"
         )
 
-    def nft_rule(chain: str, *parts: str, comment: Optional[str] = None) -> str:
+    def nft_rule(chain: str, *parts: str, comment: str | None = None) -> str:
         line = [f"add rule inet {table_name} {chain}", *filter(None, parts)]
         if comment:
             line.append(f'comment "{comment}"')
@@ -119,8 +119,8 @@ def remove_nft_rules(table_name: str) -> str:
 
 
 def _prerouting(
-    rule: Rule, mode_opts: WireguardSSHReverseOpts, server_addrs: Dict[int, str]
-) -> List[Tuple[str, str]]:
+    rule: Rule, mode_opts: WireguardSSHReverseOpts, server_addrs: dict[int, str]
+) -> list[tuple[str, str]]:
     """The (match, statement) pairs of a rule in the prerouting chain."""
     match rule.target:
         case Action.REJECT:
@@ -142,7 +142,7 @@ def _prerouting(
             ]
 
 
-def _matches(rule: Rule) -> List[str]:
+def _matches(rule: Rule) -> list[str]:
     """Match clauses covering a rule. An nft rule matches addresses of one family only, so there is one per family of the rule's addresses."""
     if rule.saddr is None and rule.daddr is None:
         return [_l4_match(rule)]

@@ -2,7 +2,7 @@ import logging
 import shlex
 import subprocess
 import tempfile
-from typing import Iterable, Optional
+from collections.abc import Iterable
 
 from netlane.utils import run_cmd
 
@@ -12,21 +12,21 @@ DEVICE_TMP_DIR = "/data/local/tmp"
 
 
 def run(
-    serial: Optional[str], args: Iterable[str], check: bool = True
+    serial: str | None, args: Iterable[str], check: bool = True
 ) -> subprocess.CompletedProcess:
     """Runs `adb <args>` against the device with `serial`, or the only connected one."""
     return run_cmd([*_adb(serial), *args], check=check)
 
 
 def shell(
-    serial: Optional[str], cmd: str, check: bool = True
+    serial: str | None, cmd: str, check: bool = True
 ) -> subprocess.CompletedProcess:
     """Runs `cmd` in an unprivileged shell on the device."""
     return run(serial, ["shell", "-n", cmd], check=check)
 
 
 def run_script(
-    serial: Optional[str], elevation: str, content: str, check: bool = True
+    serial: str | None, elevation: str, content: str, check: bool = True
 ) -> subprocess.CompletedProcess:
     """Runs `content` from a device temp file as stdin of the root shell `elevation`. An empty `elevation` requires adbd to run as root."""
     tmp = _upload_temp(serial, content)
@@ -38,18 +38,18 @@ def run_script(
     )
 
 
-def start(serial: Optional[str], args: Iterable[str]) -> subprocess.Popen:
+def start(serial: str | None, args: Iterable[str]) -> subprocess.Popen:
     """Starts `adb <args>` in the background."""
     cmd = [*_adb(serial), *args]
     logger.debug(f"Starting: {' '.join(cmd)}")
     return subprocess.Popen(cmd, stdin=subprocess.DEVNULL)
 
 
-def _adb(serial: Optional[str]) -> list:
+def _adb(serial: str | None) -> list:
     return ["adb", "-s", serial] if serial else ["adb"]
 
 
-def _upload_temp(serial: Optional[str], content: str) -> str:
+def _upload_temp(serial: str | None, content: str) -> str:
     """Copies `content` to a new device temp file and returns its path."""
     cmd = f"mktemp -p {DEVICE_TMP_DIR}"
     tmp = shell(serial, cmd).stdout.decode("utf-8").strip()
