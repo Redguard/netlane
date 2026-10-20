@@ -9,6 +9,9 @@ from types import SimpleNamespace
 import pytest
 
 from netlane.config import load_config
+from netlane.modes.adb_reverse import CHAIN_NAME
+
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture(scope="module")
@@ -29,15 +32,16 @@ def rooted(shipped_config, adb_device, create_netlane, local_listener):
 
 def _rejected_ipv6_packets(device_exec) -> int:
     """Packet counter of the profile's IPv6 reject rule."""
-    listing = device_exec("ip6tables -w -nvxL netlane").stdout
+    listing = device_exec(f"ip6tables -w -nvxL {CHAIN_NAME}").stdout
     (rule,) = [line for line in listing.splitlines() if "Reject IPv6 traffic" in line]
     return int(rule.split()[0])
 
 
-@pytest.mark.integration
 def test_every_rule_is_installed(rooted, shipped_config, device_exec, adb_reverse_list):
     profile = load_config(shipped_config).profiles["rooted"]
-    rules = device_exec("iptables -w -S netlane; ip6tables -w -S netlane").stdout
+    rules = device_exec(
+        f"iptables -w -S {CHAIN_NAME}; ip6tables -w -S {CHAIN_NAME}"
+    ).stdout
 
     assert [rule.name for rule in profile.rules] == [
         "Reject IPv6 traffic",
@@ -57,7 +61,6 @@ def test_every_rule_is_installed(rooted, shipped_config, device_exec, adb_revers
     assert "tcp:8081 tcp:8081" in reverse_list
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize("port", [80, 443])
 def test_app_http_and_https_are_redirected_to_proxy(rooted, device_send, remote, port):
     sent = device_send(remote.address, port)
@@ -68,7 +71,6 @@ def test_app_http_and_https_are_redirected_to_proxy(rooted, device_send, remote,
     assert remote.peers(f"tcp/{port}", sent.payload) == []
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize("port", [80, 443])
 def test_http_and_https_of_other_apps_pass_through(rooted, device_send, remote, port):
     sent = device_send(remote.address, port, root=True)
@@ -78,7 +80,6 @@ def test_http_and_https_of_other_apps_pass_through(rooted, device_send, remote, 
     assert sent.line not in rooted.proxy
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize("root", [False, True], ids=["app", "other"])
 def test_other_tcp_traffic_passes_through(rooted, device_send, remote, root):
     sent = device_send(remote.address, 8443, root=root)
@@ -88,7 +89,6 @@ def test_other_tcp_traffic_passes_through(rooted, device_send, remote, root):
     assert sent.line not in rooted.proxy
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize("root", [False, True], ids=["app", "other"])
 def test_quic_is_rejected(rooted, device_send, remote, root):
     quic = device_send(remote.address, 443, udp=True, root=root, timeout=2)
@@ -99,7 +99,6 @@ def test_quic_is_rejected(rooted, device_send, remote, root):
     assert remote.peers("udp/443", quic.payload) == []
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize("root", [False, True], ids=["app", "other"])
 def test_ipv6_is_rejected(rooted, device_send, device_exec, root):
     before = _rejected_ipv6_packets(device_exec)
@@ -111,7 +110,6 @@ def test_ipv6_is_rejected(rooted, device_send, device_exec, root):
     assert sent.line not in rooted.proxy
 
 
-@pytest.mark.integration
 def test_telemetry_tunnel_reaches_its_local_port(rooted, device_send):
     # No rule of the profile targets this tunnel, the device addresses it directly.
     sent = device_send("127.0.0.1", 8081)

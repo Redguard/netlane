@@ -5,6 +5,9 @@ from types import SimpleNamespace
 import pytest
 
 from netlane.config import load_config
+from netlane.modes.wireguard_ssh_reverse import TABLE_NAME
+
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture(scope="module")
@@ -38,10 +41,9 @@ def jailed(
         )
 
 
-@pytest.mark.integration
 def test_every_rule_is_installed(jailed, shipped_config, vps_exec):
     profile = load_config(shipped_config).profiles["jailed"]
-    ruleset = vps_exec("nft list table inet netlane").stdout
+    ruleset = vps_exec(f"nft list table inet {TABLE_NAME}").stdout
 
     assert [rule.name for rule in profile.rules] == [
         "Reject IPv6 traffic",
@@ -53,7 +55,6 @@ def test_every_rule_is_installed(jailed, shipped_config, vps_exec):
         assert f'comment "{rule.name}"' in ruleset
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize("port", [80, 443])
 def test_http_and_https_are_redirected_to_proxy(jailed, remote, port):
     sent = jailed.client.send(remote.address, port)
@@ -64,7 +65,6 @@ def test_http_and_https_are_redirected_to_proxy(jailed, remote, port):
     assert remote.peers(f"tcp/{port}", sent.payload) == []
 
 
-@pytest.mark.integration
 def test_quic_is_rejected(jailed, remote):
     quic = jailed.client.send(remote.address, 443, udp=True)
     # Sent afterwards over the same path, so the QUIC datagram had its chance to arrive.
@@ -74,7 +74,6 @@ def test_quic_is_rejected(jailed, remote):
     assert remote.peers("udp/443", quic.payload) == []
 
 
-@pytest.mark.integration
 def test_other_tcp_traffic_passes_through(jailed, remote):
     sent = jailed.client.send(remote.address, 8443)
 
@@ -84,14 +83,12 @@ def test_other_tcp_traffic_passes_through(jailed, remote):
     assert sent.line not in jailed.proxy
 
 
-@pytest.mark.integration
 def test_other_udp_traffic_passes_through(jailed, remote):
     sent = jailed.client.send(remote.address, 53, udp=True)
 
     assert remote.peers("udp/53", sent.payload, wait=5) == [jailed.gateway_address]
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize("port", [80, 443])
 def test_ipv6_is_rejected(jailed, port):
     # 2001:db8::1 is unroutable (documentation prefix). Without the reject rule,
@@ -103,7 +100,6 @@ def test_ipv6_is_rejected(jailed, port):
     assert sent.line not in jailed.proxy_v6
 
 
-@pytest.mark.integration
 def test_tunnel_port_is_not_directly_reachable(jailed):
     sent = jailed.client.send("10.10.10.1", 8080, timeout=3)
 

@@ -1,6 +1,12 @@
 import pytest
 
 from netlane.config import load_config
+from netlane.modes.adb_reverse import CHAIN_NAME
+from netlane.rulesets.iptables import _input_chain
+
+pytestmark = pytest.mark.integration
+
+INPUT_CHAIN = _input_chain(CHAIN_NAME)
 
 HOOK_FILES = " ".join(
     f"/data/local/tmp/hook_{hook}"
@@ -11,62 +17,62 @@ HOOK_FILES = " ".join(
 def _assert_device_clean(device_exec, adb_reverse_list):
     for ipt in ("iptables", "ip6tables"):
         # 1. Custom chains are removed from the filter table
-        assert device_exec(f"{ipt} -w -S netlane", check=False).returncode != 0
-        assert device_exec(f"{ipt} -w -S netlane_input", check=False).returncode != 0
+        assert device_exec(f"{ipt} -w -S {CHAIN_NAME}", check=False).returncode != 0
+        assert device_exec(f"{ipt} -w -S {INPUT_CHAIN}", check=False).returncode != 0
 
         # 2. Hooks into the built-in chains are removed
-        assert "netlane" not in device_exec(f"{ipt} -w -S OUTPUT").stdout
-        assert "netlane" not in device_exec(f"{ipt} -w -S INPUT").stdout
+        assert CHAIN_NAME not in device_exec(f"{ipt} -w -S OUTPUT").stdout
+        assert CHAIN_NAME not in device_exec(f"{ipt} -w -S INPUT").stdout
 
     # 3. Custom chain and hook are removed from the nat table
-    assert device_exec("iptables -w -t nat -S netlane", check=False).returncode != 0
-    assert "netlane" not in device_exec("iptables -w -t nat -S OUTPUT").stdout
+    assert (
+        device_exec(f"iptables -w -t nat -S {CHAIN_NAME}", check=False).returncode != 0
+    )
+    assert CHAIN_NAME not in device_exec("iptables -w -t nat -S OUTPUT").stdout
 
     # 4. Reverse tunnel is removed
     assert "tcp:8080" not in adb_reverse_list()
 
 
-@pytest.mark.integration
 def test_up_and_down_lifecycle(netlane_adb, device_exec, adb_reverse_list):
     with netlane_adb.up("rooted"):
         # 1. nat chain is hooked into OUTPUT and redirects to the tunnel port
         nat_output = device_exec("iptables -w -t nat -S OUTPUT")
-        assert "-A OUTPUT -j netlane" in nat_output.stdout
+        assert f"-A OUTPUT -j {CHAIN_NAME}" in nat_output.stdout
 
-        nat_res = device_exec("iptables -w -t nat -S netlane")
-        assert "-A netlane -o lo -j RETURN" in nat_res.stdout
+        nat_res = device_exec(f"iptables -w -t nat -S {CHAIN_NAME}")
+        assert f"-A {CHAIN_NAME} -o lo -j RETURN" in nat_res.stdout
         assert "--dport 80 " in nat_res.stdout
         assert '--comment "Redirect HTTP"' in nat_res.stdout
         assert "-j DNAT --to-destination 127.0.0.1:8080" in nat_res.stdout
 
         # 2. filter chains exist for both address families and drop unmatched traffic
         for ipt in ("iptables", "ip6tables"):
-            assert "-A OUTPUT -j netlane" in device_exec(f"{ipt} -w -S OUTPUT").stdout
-            assert (
-                "-A INPUT -j netlane_input" in device_exec(f"{ipt} -w -S INPUT").stdout
-            )
+            output = device_exec(f"{ipt} -w -S OUTPUT").stdout
+            assert f"-A OUTPUT -j {CHAIN_NAME}" in output
+            input = device_exec(f"{ipt} -w -S INPUT").stdout
+            assert f"-A INPUT -j {INPUT_CHAIN}" in input
 
-            filter_res = device_exec(f"{ipt} -w -S netlane")
+            filter_res = device_exec(f"{ipt} -w -S {CHAIN_NAME}")
             assert "--ctstate DNAT -j RETURN" in filter_res.stdout
             assert '--comment "Default Route" -j RETURN' in filter_res.stdout
-            assert filter_res.stdout.strip().endswith("-A netlane -j DROP")
+            assert filter_res.stdout.strip().endswith(f"-A {CHAIN_NAME} -j DROP")
 
             # 3. Tunnel port is only reachable from the device itself
-            input_res = device_exec(f"{ipt} -w -S netlane_input")
+            input_res = device_exec(f"{ipt} -w -S {INPUT_CHAIN}")
             assert "--dport 8080 -j DROP" in input_res.stdout
 
         # 4. Connections opened before the rules are reset
-        filter4_res = device_exec("iptables -w -S netlane")
+        filter4_res = device_exec(f"iptables -w -S {CHAIN_NAME}")
         assert "-j REJECT --reject-with tcp-reset" in filter4_res.stdout
 
         # 5. Reverse ADB tunnel is active
         assert "tcp:8080 tcp:8080" in adb_reverse_list()
 
-    # After exiting the context manager, netlane down has executed
+    # Leaving the context ran `down`
     _assert_device_clean(device_exec, adb_reverse_list)
 
 
-@pytest.mark.integration
 def test_tunnel_redirects_traffic_to_local_port(
     netlane_adb, device_exec, local_listener
 ):
@@ -82,7 +88,6 @@ def test_tunnel_redirects_traffic_to_local_port(
     assert "pong" in res.stdout
 
 
-@pytest.mark.integration
 def test_rule_targets_and_default_deny(
     adb_reverse_config, tmp_path, create_netlane, device_send, local_listener, remote
 ):
@@ -123,7 +128,6 @@ def test_rule_targets_and_default_deny(
     assert len(passed_peers) == 1
 
 
-@pytest.mark.integration
 def test_up_refuses_when_already_up(netlane_adb):
     with netlane_adb.up("rooted"):
         res = netlane_adb.run("up", "rooted")
@@ -131,7 +135,6 @@ def test_up_refuses_when_already_up(netlane_adb):
         assert "Run 'down rooted' first" in (res.stdout + res.stderr)
 
 
-@pytest.mark.integration
 def test_up_refuses_when_port_already_reversed(
     netlane_adb, adb_device, device_exec, adb_reverse_list
 ):
@@ -145,13 +148,12 @@ def test_up_refuses_when_port_already_reversed(
         assert "Device port(s) 8080 already reversed" in (res.stdout + res.stderr)
 
         # Nothing was applied and the foreign tunnel is left untouched
-        assert device_exec("iptables -w -S netlane", check=False).returncode != 0
+        assert device_exec(f"iptables -w -S {CHAIN_NAME}", check=False).returncode != 0
         assert "tcp:8080 tcp:8080" in adb_reverse_list()
     finally:
         netlane_adb._run_cmd(["adb", "-s", serial, "reverse", "--remove", "tcp:8080"])
 
 
-@pytest.mark.integration
 def test_down_is_idempotent(netlane_adb, device_exec, adb_reverse_list):
     # Ensure profile is down initially
     netlane_adb.down("rooted")
@@ -164,7 +166,6 @@ def test_down_is_idempotent(netlane_adb, device_exec, adb_reverse_list):
     _assert_device_clean(device_exec, adb_reverse_list)
 
 
-@pytest.mark.integration
 def test_app_rule_resolves_package_uids(
     adb_reverse_config, tmp_path, device_exec, create_netlane
 ):
@@ -181,30 +182,28 @@ def test_app_rule_resolves_package_uids(
 
     with runner.up("rooted"):
         for ipt in ("iptables", "ip6tables"):
-            filter_res = device_exec(f"{ipt} -w -S netlane")
+            filter_res = device_exec(f"{ipt} -w -S {CHAIN_NAME}")
             assert "-m owner --uid-owner 2000" in filter_res.stdout
             assert '--comment "Reject shell" -j REJECT' in filter_res.stdout
 
 
-@pytest.mark.integration
 def test_up_refuses_when_app_not_installed(
     adb_reverse_config, tmp_path, device_exec, create_netlane
 ):
     app_cfg = tmp_path / "missing_app_config.toml"
     app_cfg.write_text(adb_reverse_config("""
-  { name = "Reject missing", app = ["com.netlane.not.installed"], target = "action:reject" },
+  { name = "Reject missing", app = ["com.example.not.installed"], target = "action:reject" },
 """))
     runner = create_netlane(app_cfg)
 
     res = runner.run("up", "rooted")
     assert res.returncode != 0
-    assert "App 'com.netlane.not.installed' is not installed on the device." in (
+    assert "App 'com.example.not.installed' is not installed on the device." in (
         res.stdout + res.stderr
     )
-    assert device_exec("iptables -w -S netlane", check=False).returncode != 0
+    assert device_exec(f"iptables -w -S {CHAIN_NAME}", check=False).returncode != 0
 
 
-@pytest.mark.integration
 def test_lifecycle_hooks_executed(
     adb_reverse_config, tmp_path, device_exec, create_netlane
 ):
@@ -238,7 +237,6 @@ post_down = "touch /data/local/tmp/hook_post_down"
         device_exec(f"rm -f {HOOK_FILES}")
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize("hook", ["pre_up", "post_up"])
 def test_failed_up_tears_down(
     adb_reverse_config, tmp_path, device_exec, adb_reverse_list, create_netlane, hook
@@ -289,7 +287,6 @@ RULE_MATRIX = """
 """
 
 
-@pytest.mark.integration
 def test_rule_matrix_is_accepted_by_iptables(
     adb_reverse_config, tmp_path, device_exec, create_netlane
 ):
@@ -302,8 +299,10 @@ def test_rule_matrix_is_accepted_by_iptables(
 
     with runner.up("rooted"):
         rulesets = {
-            4: device_exec("iptables -w -S netlane; iptables -w -t nat -S netlane"),
-            6: device_exec("ip6tables -w -S netlane"),
+            4: device_exec(
+                f"iptables -w -S {CHAIN_NAME}; iptables -w -t nat -S {CHAIN_NAME}"
+            ),
+            6: device_exec(f"ip6tables -w -S {CHAIN_NAME}"),
         }
 
     for rule in load_config(cfg).profiles["rooted"].rules:

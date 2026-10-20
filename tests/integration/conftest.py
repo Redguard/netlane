@@ -66,7 +66,7 @@ def _service_address(host: str) -> str:
 
 
 @pytest.fixture(scope="session")
-def vps_server():
+def vps_server() -> None:
     """Checks that the VPS accepts the stack's key over SSH."""
     res = subprocess.run(
         ["ssh", "-o", "ConnectTimeout=5", f"{VPS_USER}@{VPS_HOST}", "true"],
@@ -77,7 +77,6 @@ def vps_server():
         pytest.fail(
             f"SSH to {VPS_USER}@{VPS_HOST} failed: {res.stderr.strip()}. {START_HINT}"
         )
-    return {"host": VPS_HOST, "user": VPS_USER}
 
 
 @pytest.fixture(scope="session")
@@ -244,7 +243,14 @@ class NetlaneRunner:
             # Do not rely on EOF alone, a leftover child may keep the pipe open.
             deadline = time.monotonic() + exit_timeout
             while proc.poll() is None and time.monotonic() < deadline:
-                _collect(min(deadline, time.monotonic() + 0.2))
+                if eof:
+                    # Nothing left to read, wait for the exit itself.
+                    try:
+                        proc.wait(timeout=deadline - time.monotonic())
+                    except subprocess.TimeoutExpired:
+                        pass
+                else:
+                    _collect(min(deadline, time.monotonic() + 0.2))
             if proc.poll() is None:
                 _kill()
                 return None
@@ -286,46 +292,59 @@ class NetlaneRunner:
         return self._run_cmd(self._cmd("-v", "down", profile), check=check)
 
 
+def _wireguard_config(
+    profile: str = "jailed",
+    rules: str = "",
+    hooks: str = "",
+    tunnels: str = "proxy_main = 8080",
+) -> str:
+    """Builds a config.toml with a wireguard_ssh_reverse profile for the test VPS."""
+    return f"""[profiles.{profile}]
+mode = "wireguard_ssh_reverse"
+
+rules = [
+{rules}
+]
+
+[profiles.{profile}.mode_opts]
+ssh_host = "{VPS_HOST}"
+ssh_user = "{VPS_USER}"
+elevation = "sudo"
+tunnels = {{ {tunnels} }}
+
+[profiles.{profile}.hooks]
+{hooks}
+"""
+
+
+@pytest.fixture(scope="session")
+def wireguard_config(vps_server):
+    """Factory fixture building wireguard_ssh_reverse configs with custom rules, hooks or tunnels."""
+    return _wireguard_config
+
+
 @pytest.fixture(scope="session")
 def setup_vps(vps_server, tmp_path_factory):
     """Provisions the VPS once per test session."""
     cfg = tmp_path_factory.mktemp("cfg") / "config.toml"
-    cfg.write_text(f"""[profiles.jailed]
-mode = "wireguard_ssh_reverse"
-
-[profiles.jailed.mode_opts]
-ssh_host = "{vps_server['host']}"
-ssh_user = "{vps_server['user']}"
-elevation = "sudo"
-tunnels = {{ proxy_main = 8080 }}
-""")
+    cfg.write_text(_wireguard_config())
     return NetlaneRunner(cfg).setup("jailed")
 
 
 @pytest.fixture
 def integration_config(tmp_path, setup_vps) -> Path:
     """Generates a temporary config.toml pointing to the test VPS."""
-    config_content = f"""[profiles.jailed]
-mode = "wireguard_ssh_reverse"
-
-rules = [
-  {{ name = "Reject IPv6", saddr = ["::/0"], target = "action:reject" }},
-  {{ name = "Redirect HTTP", protocol = ["tcp"], dport = [80], target = "tunnel:proxy_main" }},
-  {{ name = "Default Route", target = "action:passthrough" }},
-]
-
-[profiles.jailed.mode_opts]
-ssh_host = "{VPS_HOST}"
-ssh_user = "{VPS_USER}"
-elevation = "sudo"
-tunnels = {{ proxy_main = 8080 }}
-
-[profiles.jailed.hooks]
-pre_up = ""
-post_down = ""
-"""
     config_file = tmp_path / "config.toml"
-    config_file.write_text(config_content)
+    config_file.write_text(
+        _wireguard_config(
+            rules="""
+  { name = "Reject IPv6", saddr = ["::/0"], target = "action:reject" },
+  { name = "Redirect HTTP", protocol = ["tcp"], dport = [80], target = "tunnel:proxy_main" },
+  { name = "Default Route", target = "action:passthrough" },
+""",
+            hooks='pre_up = ""\npost_down = ""',
+        )
+    )
     return config_file
 
 

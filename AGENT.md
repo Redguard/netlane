@@ -238,7 +238,7 @@ The parser in `src/netlane/config.py` enforces strict validation rules:
 When adding or altering configuration fields:
 1. Update the appropriate dataclass (`Profile`, `Rule`, `WireguardSSHReverseOpts`, `AdbReverseOpts`) in `src/netlane/config.py`.
 2. Add validation functions or checks in `__post_init__` or `parse_config_string`.
-3. Add tests to `tests/test_config_parser.py`:
+3. Add tests to `tests/unit/test_config_parser.py`:
    - Happy path with valid values.
    - Rejection of invalid types/values.
    - Strict rejection of unknown keys.
@@ -292,7 +292,7 @@ Unit tests use `pytest` and execute in milliseconds without requiring real Andro
    - Test argument parsing, flag overrides (`--config`, `--log`, `--color`, `-v`), and subcommand execution in `tests/unit/test_cli.py`.
 
 ### Integration Testing Conventions (`tests/integration/`)
-Integration tests run inside the stack of `tests/integration/compose.yml`. Services are reached by name.
+Integration tests run inside the stack of `tests/integration/compose.yml`. Services are reached by name. [docs/development.md](docs/development.md) describes the stack, how to run it and how traffic is mocked. Every module sets `pytestmark = pytest.mark.integration`. Names the modes give to tables, chains and files come from the modes' constants (`TABLE_NAME`, `CHAIN_NAME`, `APP_NAME`), never from literals.
 1. **Runner** (`docker/runner/Dockerfile`): `pytest`, the CLI, `adb`, `wg`, `ssh`. ssh key and `known_hosts` come from the `keys` volume. Hosts the proxy listeners on `127.0.0.1` and `::1`, ports `8080-8090`.
 2. **VPS** (`docker/vps/Dockerfile`): Ubuntu 26.04, systemd, sshd with the stack's host key. Authorizes the stack's key for `ubuntu` at boot. Fixtures: `vps_server`, `vps_exec`, `setup_vps`.
 3. **Android** (`redroid` service): Redroid 14 at `redroid:5555`, unprivileged shell, `elevation = "su"`. Fixtures: `adb_device`, `device_exec`, `device_send`, `netlane_adb`.
