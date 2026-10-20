@@ -145,11 +145,10 @@ uv sync
 ```
 
 ### Running Tests
-Run unit tests:
+Run unit tests. Outside the integration test environment the integration tests skip, so the whole suite runs as well:
 ```bash
 uv run pytest tests/unit
-# Or excluding integration tests via marker:
-uv run pytest -m "not integration"
+uv run pytest
 ```
 Run a specific unit test module:
 ```bash
@@ -159,7 +158,7 @@ Run tests matching a specific expression:
 ```bash
 uv run pytest tests/unit -k "test_up"
 ```
-Run integration tests. They run inside the container stack of `tests/integration/compose.yml`. The Docker host needs the kernel modules listed in [docs/development.md](docs/development.md). On macOS use the Vagrant VM in `tests/integration/vm/`.
+Run integration tests. `tests/integration/compose.yml` simulates their external components as containers: a VPS, an Android device, a WireGuard client and a remote host. A dev container cannot load the kernel modules they need, so the Docker host must have the modules listed in [docs/development.md](docs/development.md). On macOS use the Vagrant VM in `tests/integration/vm/`.
 ```bash
 export BINDER_MAJOR=$(awk '$2=="binder"{print $1}' /proc/devices)
 docker compose -f tests/integration/compose.yml run --rm --build runner
@@ -167,7 +166,7 @@ docker compose -f tests/integration/compose.yml down -v
 ```
 
 - `redroid` is not `privileged`. `BINDER_MAJOR` limits its device cgroup to the binder devices. Images newer than `14.0.0` need loop devices and do not boot. Use the `_64only` variant.
-- A test fails with the start command when its service is unreachable.
+- `compose.yml` sets `IN_TEST_ENVIRONMENT=1` for the runner. Without it the integration tests skip and name the start command. Inside the environment a test fails with the start command when its service is unreachable.
 
 
 ### Type Checking

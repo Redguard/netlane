@@ -41,9 +41,21 @@ CLIENT_ROUTE_TABLE = 51820
 ROOTED_APP = "com.android.shell"
 
 START_HINT = (
-    "Run the tests inside the stack: "
+    "Run the tests inside the integration test environment: "
     "docker compose -f tests/integration/compose.yml run --rm --build runner"
 )
+# Set by compose.yml for the runner service.
+IN_TEST_ENVIRONMENT = os.environ.get("IN_TEST_ENVIRONMENT") == "1"
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Skips the integration tests outside the integration test environment, where their services do not exist."""
+    if IN_TEST_ENVIRONMENT:
+        return
+    skip = pytest.mark.skip(reason=START_HINT)
+    for item in items:
+        if item.get_closest_marker("integration"):
+            item.add_marker(skip)
 
 
 def _ssh(host: str, script: str, check: bool = False) -> subprocess.CompletedProcess:

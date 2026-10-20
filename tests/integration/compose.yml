@@ -1,5 +1,6 @@
-# The integration test stack.
-# Needs a Docker host with binder and the legacy iptables tables in its kernel.
+# The integration test environment.
+# Simulates the external components of the tests: a VPS, an Android device, a WireGuard client and a remote host.
+# Needs a Docker host with binder and the legacy iptables tables in its kernel, which a dev container cannot provide.
 # Publishes nothing on the host.
 name: netlane-test
 
@@ -89,6 +90,10 @@ services:
     sysctls:
       # The IPv6 tunnel endpoints bind to ::1.
       - net.ipv6.conf.all.disable_ipv6=0
+    environment:
+      # Marks the integration test environment.
+      # Without it the integration tests skip.
+      IN_TEST_ENVIRONMENT: "1"
     depends_on:
       vps:
         condition: service_healthy

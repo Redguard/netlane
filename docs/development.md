@@ -18,10 +18,11 @@ uv run pytest tests/unit
 
 ## Integration tests
 
-Integration tests run the real CLI against a container stack with a VPS, an Android device, a WireGuard client and a remote host.
-Everything runs inside the stack of [tests/integration/compose.yml](../tests/integration/compose.yml), `pytest` included.
-The Docker host needs Docker and the kernel modules below and nothing else.
+Integration tests run the real CLI against a VPS, an Android device, a WireGuard client and a remote host.
+[tests/integration/compose.yml](../tests/integration/compose.yml) simulates these external components as containers and runs `pytest` next to them.
+A dev container cannot load the kernel modules they need, so they run on a Docker host with the modules below and nothing else.
 Nothing is published or configured on it.
+Outside this environment the integration tests skip, so `uv run pytest` runs the unit tests alone.
 
 ### Docker host
 
