@@ -2,8 +2,8 @@ import logging
 import re
 import shutil
 import signal
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
 
 from netlane import APP_NAME, adb
 from netlane.config import AdbReverseOpts, Profile
@@ -30,7 +30,7 @@ def setup(name: str, profile: Profile[AdbReverseOpts], distro: str) -> None:
 
 
 def pair(
-    name: str, profile: Profile[AdbReverseOpts], save_path: Optional[Path], force: bool
+    name: str, profile: Profile[AdbReverseOpts], save_path: Path | None, force: bool
 ) -> None:
     raise RuntimeError("adb_reverse has no pair step")
 
@@ -115,14 +115,14 @@ def _teardown(name: str, profile: Profile[AdbReverseOpts], watcher) -> None:
         signal.signal(signal.SIGINT, previous_handler)
 
 
-def _require_device(serial: Optional[str]) -> None:
+def _require_device(serial: str | None) -> None:
     result = adb.run(serial, ["get-state"], check=False)
     if result.returncode != 0:
         error = result.stderr.decode("utf-8").strip()
         raise StepError(f"Device not available: {error}")
 
 
-def _require_root(serial: Optional[str], elevation: str) -> None:
+def _require_root(serial: str | None, elevation: str) -> None:
     """iptables-restore reports a missing root shell as an uninitialized table, so check it up front."""
     result = adb.run_script(serial, elevation, "id -u", check=False)
     if result.stdout.decode("utf-8").strip() != "0":
@@ -132,20 +132,20 @@ def _require_root(serial: Optional[str], elevation: str) -> None:
         )
 
 
-def _require_down(name: str, serial: Optional[str], elevation: str) -> None:
+def _require_down(name: str, serial: str | None, elevation: str) -> None:
     cmd = f"if iptables -w -t nat -S {CHAIN_NAME} >/dev/null 2>&1; then echo up; fi"
     result = adb.run_script(serial, elevation, cmd)
     if result.stdout.decode("utf-8").strip() == "up":
         raise StepError(f"Profile '{name}' is already up. Run 'down {name}' first.")
 
 
-def _check_ipv6_nat(serial: Optional[str], elevation: str) -> bool:
+def _check_ipv6_nat(serial: str | None, elevation: str) -> bool:
     cmd = "if ip6tables -w -t nat -S >/dev/null 2>&1; then echo yes; fi"
     result = adb.run_script(serial, elevation, cmd)
     return result.stdout.decode("utf-8").strip() == "yes"
 
 
-def _require_ports_free(serial: Optional[str], ports: Iterable[int]) -> None:
+def _require_ports_free(serial: str | None, ports: Iterable[int]) -> None:
     listing = adb.run(serial, ["reverse", "--list"]).stdout.decode("utf-8")
     device_specs = {line.split()[1] for line in listing.splitlines() if line.strip()}
     in_use = [p for p in ports if f"tcp:{p}" in device_specs]
@@ -156,7 +156,7 @@ def _require_ports_free(serial: Optional[str], ports: Iterable[int]) -> None:
         )
 
 
-def _adbd_ports(serial: Optional[str], elevation: str) -> List[int]:
+def _adbd_ports(serial: str | None, elevation: str) -> list[int]:
     """Device-side TCP ports adbd listens on. Empty when ADB runs over USB only."""
     script = "readlink /proc/$(pidof adbd)/fd/*; cat /proc/net/tcp /proc/net/tcp6"
     output = adb.run_script(serial, elevation, script, check=False).stdout.decode()
@@ -171,8 +171,8 @@ def _adbd_ports(serial: Optional[str], elevation: str) -> List[int]:
 
 
 def _resolve_app_uids(
-    serial: Optional[str], profile: Profile[AdbReverseOpts]
-) -> Dict[str, List[int]]:
+    serial: str | None, profile: Profile[AdbReverseOpts]
+) -> dict[str, list[int]]:
     """Maps each package of the profile's app rules to its uids across all users."""
     apps = sorted({app for rule in profile.rules for app in rule.app or []})
     if not apps:
@@ -190,7 +190,7 @@ def _resolve_app_uids(
     return {app: sorted(uids) for app, uids in app_uids.items()}
 
 
-def _list_users(serial: Optional[str]) -> List[str]:
+def _list_users(serial: str | None) -> list[str]:
     output = adb.shell(serial, "pm list users").stdout.decode("utf-8")
     users = re.findall(r"UserInfo\{(\d+):", output)
     if not users:
@@ -198,7 +198,7 @@ def _list_users(serial: Optional[str]) -> List[str]:
     return users
 
 
-def _list_package_uids(serial: Optional[str], user: str) -> Dict[str, List[int]]:
+def _list_package_uids(serial: str | None, user: str) -> dict[str, list[int]]:
     """Maps each package installed for `user` to its uids."""
     cmd = f"cmd package list packages -U --user {user}"
     output = adb.shell(serial, cmd).stdout.decode("utf-8")
@@ -206,24 +206,24 @@ def _list_package_uids(serial: Optional[str], user: str) -> Dict[str, List[int]]
     return {package: [int(u) for u in uids.split(",")] for package, uids in matches}
 
 
-def _apply_script(serial: Optional[str], elevation: str, script: str) -> None:
+def _apply_script(serial: str | None, elevation: str, script: str) -> None:
     logger.info(f"Applying on the device:\n{script}")
     adb.run_script(serial, elevation, script)
 
 
-def _start_reverse_tunnels(serial: Optional[str], ports: Iterable[int]) -> None:
+def _start_reverse_tunnels(serial: str | None, ports: Iterable[int]) -> None:
     logger.info("Starting ADB reverse tunnels...")
     for port in ports:
         adb.run(serial, ["reverse", "--no-rebind", f"tcp:{port}", f"tcp:{port}"])
 
 
-def _stop_reverse_tunnels(serial: Optional[str], ports: Iterable[int]) -> None:
+def _stop_reverse_tunnels(serial: str | None, ports: Iterable[int]) -> None:
     logger.info("Stopping ADB reverse tunnels...")
     for port in ports:
         adb.run(serial, ["reverse", "--remove", f"tcp:{port}"], check=False)
 
 
-def _run_hook(serial: Optional[str], elevation: str, hook_cmd: str) -> None:
+def _run_hook(serial: str | None, elevation: str, hook_cmd: str) -> None:
     if not hook_cmd:
         return
     adb.run_script(serial, elevation, hook_cmd)

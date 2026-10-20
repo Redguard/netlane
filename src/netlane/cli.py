@@ -4,7 +4,6 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Dict
 
 from netlane.config import Config, ConfigValidationError, load_config
 from netlane.modes import adb_reverse, wireguard_ssh_reverse
@@ -13,7 +12,7 @@ from netlane.utils import COLOR_CHOICES, config_dir, setup_logging
 
 logger = logging.getLogger(__name__)
 
-MODES: Dict[str, Mode] = {
+MODES: dict[str, Mode] = {
     "wireguard_ssh_reverse": wireguard_ssh_reverse,
     "adb_reverse": adb_reverse,
 }

@@ -86,6 +86,9 @@ Burp / MitM (Host)
 
 ```
 netlane/
+├── .github/
+│   ├── dependabot.yml              # Weekly grouped updates of actions, Python packages and images
+│   └── workflows/                  # ci.yml (lint, unit, integration), package.yml (build, attest), codeql.yml
 ├── config.toml                     # Example / default configuration file
 ├── pyproject.toml                  # Project metadata, dependencies, entry points, tool configurations
 ├── README.md                       # User documentation and architectural diagrams
@@ -170,19 +173,17 @@ docker compose -f tests/integration/compose.yml down -v
 
 
 ### Type Checking
-Type checking is configured with `pyright` in standard mode (target Python 3.12, includes `src` and `tests`):
+`pyright` runs in standard mode on `src` and `tests`. Its `pythonVersion` is the minimum of `requires-python`, so the code stays compatible with it while the tools run on the newest Python:
 ```bash
 uv run pyright
 ```
 
-### Code Formatting
-Formatting is enforced using `black` targeting Python 3.12:
+### Linting & Formatting
+`ruff` lints and formats. Its target version follows `requires-python`, the rule set is in `pyproject.toml`. `zizmor` audits the GitHub workflows:
 ```bash
-# Check formatting
-uv run black --check .
-
-# Auto-format
-uv run black .
+uv run ruff check .
+uv run ruff format .
+uv run zizmor .
 ```
 
 ### Running the CLI Locally

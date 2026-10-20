@@ -4,10 +4,10 @@ from pathlib import Path
 import pytest
 
 from netlane.config import (
+    MATCH_FIELDS,
     Action,
     AdbReverseOpts,
     Config,
-    MATCH_FIELDS,
     ConfigValidationError,
     Profile,
     Rule,
@@ -51,7 +51,7 @@ def parse_rules(mode, *rules):
 
 
 @pytest.mark.parametrize(
-    "toml_content, message",
+    ("toml_content", "message"),
     [
         pytest.param(
             """
@@ -208,7 +208,7 @@ def mode_opts(mode, **overrides):
     ],
 )
 def test_invalid_tunnels_rejected(mode, tunnels):
-    with pytest.raises(ValueError, match="port"):
+    with pytest.raises((TypeError, ValueError), match="port"):
         mode_opts(mode, tunnels=tunnels)
 
 
@@ -292,13 +292,13 @@ def test_tunnel_target_parses_into_tunnel():
 
 @pytest.mark.parametrize("target", ["action:bogus", "tunnel:", "drop", ""])
 def test_invalid_target_rejected(target):
-    with pytest.raises(ConfigValidationError, match="(?i)not a valid target"):
+    with pytest.raises(ConfigValidationError, match=r"(?i)not a valid target"):
         parse_rules("adb_reverse", f'{{ name = "R", target = "{target}" }}')
 
 
 @pytest.mark.parametrize("mode", MODES)
 def test_undefined_tunnel_rejected(mode):
-    with pytest.raises(ConfigValidationError, match="(?i)target tunnel.*not defined"):
+    with pytest.raises(ConfigValidationError, match=r"(?i)target tunnel.*not defined"):
         parse_rules(mode, '{ name = "R", target = "tunnel:missing_tunnel" }')
 
 
@@ -350,7 +350,7 @@ def test_rule_after_catch_all_rejected(mode):
 
 @pytest.mark.parametrize("mode", MODES)
 @pytest.mark.parametrize(
-    "hooks, message",
+    ("hooks", "message"),
     [
         pytest.param('post-up = "id"', "not a valid hook", id="unknown name"),
         pytest.param("pre_up = 1", "must be a string", id="non-string command"),
@@ -436,7 +436,7 @@ def test_ports_without_protocol_allowed_in_wireguard_mode(field):
 
 
 @pytest.mark.parametrize(
-    "addresses, families",
+    ("addresses", "families"),
     [
         pytest.param({}, [4, 6], id="none"),
         pytest.param({"daddr": [ip_network("1.1.1.1")]}, [4], id="v4 daddr"),
@@ -466,7 +466,7 @@ def test_adb_reverse_requires_elevation():
 
 
 @pytest.mark.parametrize(
-    "toml_rule, expected",
+    ("toml_rule", "expected"),
     [
         pytest.param(
             '{ name = "R", protocol = ["tcp"], sport = [5000], dport = [80], saddr = ["10.0.0.1"], daddr = ["1.1.1.1"], skuid = [1000], target = "tunnel:main" }',

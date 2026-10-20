@@ -125,12 +125,12 @@ def scripts(state):
 
 def test_up_requires_local_adb(device, monkeypatch):
     monkeypatch.setattr(mode.shutil, "which", lambda cmd: None)
-    with pytest.raises(StepError, match="'adb'.*not found"):
+    with pytest.raises(StepError, match=r"'adb'.*not found"):
         mode.up("rooted", PROFILE)
 
 
 @pytest.mark.parametrize(
-    "state, message",
+    ("state", "message"),
     [
         pytest.param(
             {"state": done(returncode=1, stderr="error: device not found")},
@@ -210,7 +210,7 @@ def test_up_applies_rules_for_app_installed_only_for_secondary_user(device):
 
 
 @pytest.mark.parametrize(
-    "adbd_sockets, exempt",
+    ("adbd_sockets", "exempt"),
     [
         pytest.param(ADBD_SOCKETS, ["5555"], id="network"),
         pytest.param("socket:[22594]\n", [], id="usb only"),
@@ -255,7 +255,7 @@ def test_up_without_ipv6_nat_applies_ipv4_only_tunnels(device, caplog):
 
 
 def test_up_exits_without_teardown_on_disconnect(device):
-    with pytest.raises(StepError, match="Device disconnected.*'down rooted'"):
+    with pytest.raises(StepError, match=r"Device disconnected.*'down rooted'"):
         mode.up("rooted", PROFILE)
 
     assert "echo pre" not in scripts(device)
