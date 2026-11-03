@@ -67,15 +67,27 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: Publish (stub)
+    name: Publish
     needs: build
+    # Only version tags are published, manual runs stop after the build.
     if: github.event_name == 'push'
     runs-on: ubuntu-26.04
-    timeout-minutes: 5
-    permissions: {}
+    timeout-minutes: 10
+    # The environment name is part of the trusted publisher configured on PyPI.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/netlane/
+    permissions:
+      id-token: write
     steps:
-      # TODO: publish the built distributions (e.g. PyPI Trusted Publishing).
-      - name: Publishing is not implemented yet
-        env:
-          TAG: ${{ github.ref_name }}
-        run: echo "Would publish $TAG, but publishing is not implemented yet."
+      - name: Download distribution packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          packages-dir: dist/
+          print-hash: true

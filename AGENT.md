@@ -88,7 +88,7 @@ Burp / MitM (Host)
 netlane/
 ├── .github/
 │   ├── dependabot.yml              # Weekly grouped updates of actions, Python packages and images
-│   └── workflows/                  # ci.yml (lint, unit, integration), package.yml (build, attest), codeql.yml
+│   └── workflows/                  # ci.yml (lint, unit, integration), package.yml (build, attest, publish), codeql.yml
 ├── config.toml                     # Example / default configuration file
 ├── pyproject.toml                  # Project metadata, dependencies, entry points, tool configurations
 ├── README.md                       # User documentation and architectural diagrams
