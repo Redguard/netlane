@@ -2,8 +2,8 @@ import logging
 import shlex
 import subprocess
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, Optional
 
 from netlane.utils import run_cmd
 
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 def run(
     target: str,
     cmd: str,
-    elevation: Optional[str] = None,
+    elevation: str | None = None,
     tty: bool = False,
     check: bool = True,
 ) -> subprocess.CompletedProcess:

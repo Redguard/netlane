@@ -23,7 +23,7 @@ def calls(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "serial, expected",
+    ("serial", "expected"),
     [
         pytest.param(SERIAL, ["adb", "-s", SERIAL, "get-state"], id="serial"),
         pytest.param(None, ["adb", "get-state"], id="only device"),
@@ -51,7 +51,8 @@ def test_run_script_feeds_temp_file_to_root_shell_and_removes_it(calls):
         "-n",
         f"mktemp -p {adb.DEVICE_TMP_DIR}",
     ]
-    assert push[3] == "push" and push[5] == TMP
+    assert push[3] == "push"
+    assert push[5] == TMP
     assert run == [
         "adb",
         "-s",

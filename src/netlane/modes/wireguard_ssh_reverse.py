@@ -5,7 +5,6 @@ import sys
 from importlib.resources import files
 from importlib.resources.abc import Traversable
 from pathlib import Path
-from typing import Optional
 
 import qrcode
 
@@ -48,7 +47,7 @@ def setup(name: str, profile: Profile[WireguardSSHReverseOpts], distro: str) -> 
 def pair(
     name: str,
     profile: Profile[WireguardSSHReverseOpts],
-    save_path: Optional[Path],
+    save_path: Path | None,
     force: bool,
 ) -> None:
     """Deploys new keys to the server and shows the client config as a QR code."""

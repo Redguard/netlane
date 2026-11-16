@@ -150,7 +150,8 @@ def test_up_and_down_lifecycle(paired_vps, netlane, vps_exec):
         ports_res = vps_exec("ss -tln")
         assert ports_res.returncode == 0
         assert "10.10.10.1:8080" in ports_res.stdout
-        assert "fd10:10:10::1" in ports_res.stdout and ":8080" in ports_res.stdout
+        assert "fd10:10:10::1" in ports_res.stdout
+        assert ":8080" in ports_res.stdout
 
     # Leaving the context ran `down`
     _assert_vps_clean(vps_exec)
@@ -159,10 +160,9 @@ def test_up_and_down_lifecycle(paired_vps, netlane, vps_exec):
 def test_client_traffic_is_redirected_to_local_port(
     paired_client, netlane, local_listener
 ):
-    with local_listener(8080) as received:
-        with netlane.up("jailed"):
-            # 192.0.2.1 is unroutable (TEST-NET-1), only the DNAT rule can answer.
-            sent = paired_client.send("192.0.2.1", 80)
+    with local_listener(8080) as received, netlane.up("jailed"):
+        # 192.0.2.1 is unroutable (TEST-NET-1), only the DNAT rule can answer.
+        sent = paired_client.send("192.0.2.1", 80)
 
     assert received == [sent.line]
     assert sent.reply == "pong\n"
@@ -171,10 +171,9 @@ def test_client_traffic_is_redirected_to_local_port(
 def test_client_cannot_reach_tunnel_port_directly(
     paired_client, netlane, local_listener
 ):
-    with local_listener(8080) as received:
-        with netlane.up("jailed"):
-            # Only connections redirected by a tunnel rule may enter the tunnel.
-            sent = paired_client.send("10.10.10.1", 8080, timeout=3)
+    with local_listener(8080) as received, netlane.up("jailed"):
+        # Only connections redirected by a tunnel rule may enter the tunnel.
+        sent = paired_client.send("10.10.10.1", 8080, timeout=3)
 
     assert sent.returncode != 0
     assert received == []
@@ -182,11 +181,10 @@ def test_client_cannot_reach_tunnel_port_directly(
 
 def test_client_ipv6_traffic_is_rejected(paired_client, netlane, local_listener):
     # IPv6 connections leave the tunnel on the local IPv6 loopback.
-    with local_listener(8080, host="::1") as received:
-        with netlane.up("jailed"):
-            # 2001:db8::1 is unroutable (documentation prefix). Without the reject
-            # rule, the HTTP rule would redirect it into the tunnel.
-            sent = paired_client.send("2001:db8::1", 80)
+    with local_listener(8080, host="::1") as received, netlane.up("jailed"):
+        # 2001:db8::1 is unroutable (documentation prefix). Without the reject
+        # rule, the HTTP rule would redirect it into the tunnel.
+        sent = paired_client.send("2001:db8::1", 80)
 
     assert sent.returncode != 0
     assert received == []

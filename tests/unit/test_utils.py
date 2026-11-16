@@ -8,7 +8,7 @@ HOME = Path("/home/user")
 
 
 @pytest.mark.parametrize(
-    "platform, env, expected",
+    ("platform", "env", "expected"),
     [
         pytest.param("linux", {}, HOME / ".config" / APP_NAME, id="linux"),
         pytest.param(
@@ -51,7 +51,7 @@ def test_config_dir(monkeypatch, platform, env, expected):
     assert utils.config_dir() == expected
 
 
-@pytest.mark.parametrize("secret, logged", [(False, True), (True, False)])
+@pytest.mark.parametrize(("secret", "logged"), [(False, True), (True, False)])
 def test_run_cmd_logs_stdout_unless_secret(caplog, secret, logged):
     caplog.set_level("DEBUG")
     utils.run_cmd(["echo", "private-key"], secret=secret)

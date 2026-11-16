@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Optional, Protocol, Tuple
+from typing import Any, Protocol
 
 from netlane.config import Profile
 
@@ -15,7 +15,7 @@ class Mode(Protocol):
     def SUMMARY(self) -> str: ...
 
     @property
-    def STEPS(self) -> Tuple[str, ...]: ...
+    def STEPS(self) -> tuple[str, ...]: ...
 
     def setup(self, name: str, profile: Profile[Any], distro: str) -> None: ...
 
@@ -23,7 +23,7 @@ class Mode(Protocol):
         self,
         name: str,
         profile: Profile[Any],
-        save_path: Optional[Path],
+        save_path: Path | None,
         force: bool,
     ) -> None: ...
 

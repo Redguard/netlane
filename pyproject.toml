@@ -16,17 +16,21 @@ netlane = "netlane.cli:main"
 
 [dependency-groups]
 dev = [
-    "black>=26.10.1",
     "pyright>=1.1.414",
     "pytest>=9.1.1",
+    "ruff>=0.17.1",
+    "zizmor>=1.31.1",
 ]
 
 [build-system]
 requires = ["uv_build>=0.13.0,<0.14.0"]
 build-backend = "uv_build"
 
-[tool.black]
-target-version = ["py312"]
+[tool.ruff]
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+extend-select = ["B", "C4", "PIE", "PT", "RET", "RUF", "SIM"]
 
 [tool.pyright]
 include = ["src", "tests"]

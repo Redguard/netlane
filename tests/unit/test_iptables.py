@@ -56,9 +56,11 @@ def restore_input(family, nat_rules, filter_rules, nat=True):
 
 def expected(nat_v4=(), filter_v4=(), nat_v6=(), filter_v6=(), ipv6_nat=True):
     return "\n".join(
-        ["set -e"]
-        + restore_input(4, nat_v4, filter_v4)
-        + restore_input(6, nat_v6, filter_v6, nat=ipv6_nat)
+        [
+            "set -e",
+            *restore_input(4, nat_v4, filter_v4),
+            *restore_input(6, nat_v6, filter_v6, nat=ipv6_nat),
+        ]
     )
 
 

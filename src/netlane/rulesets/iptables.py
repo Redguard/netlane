@@ -1,5 +1,4 @@
 import itertools
-from typing import Dict, List, Tuple
 
 from netlane.config import Action, AdbReverseOpts, Profile, Rule, Target, Tunnel
 
@@ -12,8 +11,8 @@ LOOPBACK_ADDRS = {4: "127.0.0.1", 6: "[::1]"}
 def generate_iptables_rules(
     profile: Profile[AdbReverseOpts],
     chain_name: str,
-    app_uids: Dict[str, List[int]],
-    adbd_ports: List[int],
+    app_uids: dict[str, list[int]],
+    adbd_ports: list[int],
     ipv6_nat: bool,
 ) -> str:
     """Compiles an adb_reverse profile into a shell script loading the rules of both address families via iptables-restore.
@@ -35,8 +34,8 @@ def generate_iptables_rules(
         return " ".join([*filter(None, parts), f"-j {target}"])
 
     tunnels = profile.mode_opts.tunnels
-    nat_rules: Dict[int, List[str]] = {family: [] for family in FAMILIES}
-    filter_rules: Dict[int, List[str]] = {family: [] for family in FAMILIES}
+    nat_rules: dict[int, list[str]] = {family: [] for family in FAMILIES}
+    filter_rules: dict[int, list[str]] = {family: [] for family in FAMILIES}
     for rule in profile.rules:
         for family in rule.families:
             nat_target, filter_target = _targets(rule.target, family, tunnels)
@@ -82,7 +81,7 @@ def remove_iptables_rules(chain_name: str) -> str:
     return "\n".join([f"{line} 2>/dev/null" for line in script] + ["true"])
 
 
-def ipv6_tunnel_rules(profile: Profile[AdbReverseOpts]) -> List[str]:
+def ipv6_tunnel_rules(profile: Profile[AdbReverseOpts]) -> list[str]:
     """Names of the profile's tunnel rules that match IPv6 traffic."""
     return [
         rule.name
@@ -95,7 +94,7 @@ def _input_chain(chain_name: str) -> str:
     return f"{chain_name}_input"
 
 
-def _nat_table(chain_name: str, rules: List[str]) -> List[str]:
+def _nat_table(chain_name: str, rules: list[str]) -> list[str]:
     return [
         "*nat",
         f":{chain_name} - [0:0]",
@@ -107,8 +106,8 @@ def _nat_table(chain_name: str, rules: List[str]) -> List[str]:
 
 
 def _filter_table(
-    chain_name: str, rules: List[str], ports: List[int], adbd_ports: List[int]
-) -> List[str]:
+    chain_name: str, rules: list[str], ports: list[int], adbd_ports: list[int]
+) -> list[str]:
     input_chain = _input_chain(chain_name)
     return [
         "*filter",
@@ -131,7 +130,7 @@ def _filter_table(
     ]
 
 
-def _targets(target: Target, family: int, tunnels: Dict[str, int]) -> Tuple[str, str]:
+def _targets(target: Target, family: int, tunnels: dict[str, int]) -> tuple[str, str]:
     """The (nat, filter) targets of a rule. Both terminate, so the first matching rule wins in either table."""
     match target:
         case Action.REJECT:
@@ -150,7 +149,7 @@ def _targets(target: Target, family: int, tunnels: Dict[str, int]) -> Tuple[str,
             )
 
 
-def _matches(rule: Rule, family: int, app_uids: Dict[str, List[int]]) -> List[str]:
+def _matches(rule: Rule, family: int, app_uids: dict[str, list[int]]) -> list[str]:
     """The iptables match clauses of a rule, one per protocol, port and uid combination."""
     addrs = [
         f"{flag} {','.join(str(n) for n in networks if n.version == family)}"

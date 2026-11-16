@@ -9,10 +9,10 @@ import sys
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from collections.abc import Callable, Generator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Generator, Optional
 
 import pytest
 
@@ -84,6 +84,7 @@ def vps_server() -> None:
         ["ssh", "-o", "ConnectTimeout=5", f"{VPS_USER}@{VPS_HOST}", "true"],
         capture_output=True,
         text=True,
+        check=False,
     )
     if res.returncode != 0:
         pytest.fail(
@@ -127,7 +128,7 @@ class NetlaneRunner:
     def _run_cmd(
         self,
         cmd: list[str],
-        input_data: Optional[str] = None,
+        input_data: str | None = None,
         check: bool = False,
     ) -> subprocess.CompletedProcess:
         res = subprocess.run(
@@ -148,7 +149,7 @@ class NetlaneRunner:
     def run(
         self,
         *args: str,
-        stdin: Optional[str] = None,
+        stdin: str | None = None,
         check: bool = False,
     ) -> subprocess.CompletedProcess:
         """Runs the CLI with the given arguments."""
@@ -171,7 +172,7 @@ class NetlaneRunner:
     def pair(
         self,
         profile: str,
-        save_path: Optional[Path] = None,
+        save_path: Path | None = None,
         force: bool = True,
         check: bool = True,
     ) -> subprocess.CompletedProcess:
@@ -211,7 +212,7 @@ class NetlaneRunner:
         stdout = proc.stdout
         # None marks EOF. The reader keeps draining until the process exits, so a
         # verbose `up` can never block on a full pipe.
-        lines: queue.Queue[Optional[str]] = queue.Queue()
+        lines: queue.Queue[str | None] = queue.Queue()
 
         def _drain() -> None:
             for line in stdout:
@@ -224,7 +225,7 @@ class NetlaneRunner:
         output: list[str] = []
         eof = False
 
-        def _collect(deadline: float, until: Optional[str] = None) -> bool:
+        def _collect(deadline: float, until: str | None = None) -> bool:
             """Echoes output until `until` shows up, EOF or the deadline. True if `until` was seen."""
             nonlocal eof
             while not eof:
@@ -248,7 +249,7 @@ class NetlaneRunner:
             proc.wait()
             _collect(time.monotonic() + 2)
 
-        def _interrupt() -> Optional[int]:
+        def _interrupt() -> int | None:
             """Sends Ctrl-C to `up` and returns its exit code, or None if it did not exit in time."""
             if proc.poll() is None:
                 os.killpg(proc.pid, signal.SIGINT)
@@ -257,10 +258,8 @@ class NetlaneRunner:
             while proc.poll() is None and time.monotonic() < deadline:
                 if eof:
                     # Nothing left to read, wait for the exit itself.
-                    try:
+                    with suppress(subprocess.TimeoutExpired):
                         proc.wait(timeout=deadline - time.monotonic())
-                    except subprocess.TimeoutExpired:
-                        pass
                 else:
                     _collect(min(deadline, time.monotonic() + 0.2))
             if proc.poll() is None:
@@ -389,6 +388,7 @@ def _adb(*args: str, timeout: float = 30.0) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         timeout=timeout,
+        check=False,
     )
 
 
@@ -399,7 +399,9 @@ def adb_device():
     deadline = time.time() + 180
     while time.time() < deadline:
         # adbd only listens once Android is up.
-        subprocess.run(["adb", "connect", ADB_SERIAL], capture_output=True, text=True)
+        subprocess.run(
+            ["adb", "connect", ADB_SERIAL], capture_output=True, text=True, check=False
+        )
         res = _adb("shell", "-n", "getprop sys.boot_completed", timeout=10)
         if res.returncode == 0 and res.stdout.strip() == "1":
             return {"serial": ADB_SERIAL, "elevation": ADB_ELEVATION}
@@ -468,10 +470,12 @@ def adb_integration_config(tmp_path, adb_device) -> Path:
     """Generates a temporary config.toml pointing to the test Android device."""
     config_file = tmp_path / "config.toml"
     # The tunnel rule is restricted to IPv4, the container kernel may lack IPv6 NAT.
-    config_file.write_text(_adb_reverse_config("""
+    config_file.write_text(
+        _adb_reverse_config("""
   { name = "Redirect HTTP", daddr = ["0.0.0.0/0"], protocol = ["tcp"], dport = [80], target = "tunnel:proxy_main" },
   { name = "Default Route", target = "action:passthrough" },
-"""))
+""")
+    )
     return config_file
 
 
@@ -645,8 +649,7 @@ class WireguardClient:
             script = f"echo {payload} > /dev/udp/{host}/{port}"
         else:
             script = (
-                f"exec 3<>/dev/tcp/{host}/{port} && echo {payload} >&3 "
-                "&& head -n 1 <&3"
+                f"exec 3<>/dev/tcp/{host}/{port} && echo {payload} >&3 && head -n 1 <&3"
             )
         res = _client_exec(f"timeout {timeout} bash -c {shlex.quote(script)}")
         return Sent(payload, res.returncode, res.stdout)

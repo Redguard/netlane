@@ -35,7 +35,7 @@ def parse(*argv):
 
 
 @pytest.mark.parametrize(
-    "argv, expected",
+    ("argv", "expected"),
     [
         pytest.param(
             ["--config", "x.toml", "up", "jailed"],
@@ -78,7 +78,7 @@ def test_parser(argv, expected):
 
 
 @pytest.mark.parametrize(
-    "argv, message",
+    ("argv", "message"),
     [
         pytest.param(["up", "missing"], "Profile 'missing' not found", id="unknown"),
         pytest.param(
@@ -138,7 +138,7 @@ def test_main_runs_command(run_main, capsys):
 
 
 @pytest.mark.parametrize(
-    "content, message",
+    ("content", "message"),
     [
         pytest.param("profiles = [", "Invalid TOML", id="invalid toml"),
         pytest.param("", "Missing required 'profiles' section", id="no profiles"),

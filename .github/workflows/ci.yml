@@ -13,35 +13,54 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
+permissions: {}
+
+env:
+  PYTHON_VERSION: "3.15"
 
 jobs:
   lint:
-    name: Lint (Black & Pyright)
+    name: Lint
     runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Set up uv
+      - name: Set up toolchain
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install dependencies
-        run: uv sync --frozen
+        run: uv sync --locked
 
-      - name: Check code formatting (Black)
-        run: uv run black --check .
+      - name: Lint
+        run: uv run ruff check --output-format=github .
 
-      - name: Run type checking (Pyright)
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Check types
         run: uv run pyright
 
+      - name: Audit workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run zizmor .
+
   unit:
+    # The matrix covers every Python version allowed by requires-python.
     name: Unit Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -54,15 +73,17 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Set up uv
+      - name: Set up toolchain
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --frozen
+        run: uv sync --locked
 
       - name: Run unit tests
         run: uv run pytest tests/unit
@@ -70,12 +91,17 @@ jobs:
   integration:
     name: Integration Tests
     runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
     env:
       COMPOSE_FILE: tests/integration/compose.yml
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Load kernel modules for the containers
         run: |

@@ -21,14 +21,14 @@ OPTS = WireguardSSHReverseOpts(
     elevation="sudo",
     tunnels={"main": 8080, "telemetry": 8081},
 )
-PARAMS = dict(
-    table_name=APP_NAME,
-    wg_iface="wg0",
-    client_subnet_v4="10.10.10.0/24",
-    client_subnet_v6="fd10:10:10::/64",
-    wg_server_addr_v4="10.10.10.1",
-    wg_server_addr_v6="fd10:10:10::1",
-)
+PARAMS = {
+    "table_name": APP_NAME,
+    "wg_iface": "wg0",
+    "client_subnet_v4": "10.10.10.0/24",
+    "client_subnet_v6": "fd10:10:10::/64",
+    "wg_server_addr_v4": "10.10.10.1",
+    "wg_server_addr_v6": "fd10:10:10::1",
+}
 
 
 def generate(rules, **overrides):
@@ -72,7 +72,7 @@ def test_empty_profile_only_sets_up_chains():
 
 
 @pytest.mark.parametrize(
-    "action, statement",
+    ("action", "statement"),
     [
         # reject can't run in the nat-hooked prerouting chain, input and forward reject the mark.
         pytest.param(Action.REJECT, "meta mark set 1 return", id="reject"),
@@ -159,7 +159,7 @@ def test_mixed_family_addresses_split_per_family():
 
 
 @pytest.mark.parametrize(
-    "ports, match",
+    ("ports", "match"),
     [
         pytest.param(
             {"protocol": ["udp"], "sport": [5353], "dport": [53]},

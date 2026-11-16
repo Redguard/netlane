@@ -5,26 +5,15 @@ import tomllib
 from contextlib import suppress
 from dataclasses import dataclass, field, fields
 from enum import Enum
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Dict,
-    Generic,
-    List,
-    Optional,
-    Tuple,
-    Type,
-    TypeVar,
-    Union,
-)
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from _typeshed import DataclassInstance
 
 logger = logging.getLogger(__name__)
 
-IPNetwork = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
+IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 MIN_PORT, MAX_PORT = 1, 65535
 MIN_UID, MAX_UID = 0, 2**32 - 2
@@ -46,16 +35,14 @@ MAX_HOSTNAME_LENGTH = 253
 class ConfigValidationError(Exception):
     """Exception raised for configuration validation errors."""
 
-    pass
 
-
-def _parse_network(value: Union[str, IPNetwork]) -> IPNetwork:
+def _parse_network(value: str | IPNetwork) -> IPNetwork:
     if isinstance(value, (ipaddress.IPv4Network, ipaddress.IPv6Network)):
         return value
     try:
         return ipaddress.ip_network(value, strict=False)
     except ValueError as e:
-        raise ValueError(f"{value!r} is not a valid IP address or network: {e}")
+        raise ValueError(f"{value!r} is not a valid IP address or network: {e}") from e
 
 
 def _validate_range(value: int, low: int, high: int, label: str) -> int:
@@ -74,7 +61,7 @@ def _validate_pattern(value: str, pattern: re.Pattern, label: str) -> str:
     return value
 
 
-def _validate_choice(value: str, choices: Tuple[str, ...], label: str) -> str:
+def _validate_choice(value: str, choices: tuple[str, ...], label: str) -> str:
     if value not in choices:
         raise ValueError(
             f"{value!r} is not a valid {label} ({', '.join(map(repr, choices))})"
@@ -111,9 +98,9 @@ def _validate_host(value: str) -> str:
     raise ValueError(f"{value!r} is not a valid hostname or IP address")
 
 
-def _validate_tunnels(value: Dict[str, int]) -> Dict[str, int]:
+def _validate_tunnels(value: dict[str, int]) -> dict[str, int]:
     if not isinstance(value, dict):
-        raise ValueError("tunnels must be a table of names to ports")
+        raise TypeError("tunnels must be a table of names to ports")
     for port in value.values():
         _validate_range(port, MIN_PORT, MAX_PORT, "port")
     if len(set(value.values())) != len(value):
@@ -121,13 +108,13 @@ def _validate_tunnels(value: Dict[str, int]) -> Dict[str, int]:
     return value
 
 
-def _validate_hooks(value: Dict[str, str]) -> Dict[str, str]:
+def _validate_hooks(value: dict[str, str]) -> dict[str, str]:
     if not isinstance(value, dict):
-        raise ValueError("hooks must be a table of hook names to commands")
+        raise TypeError("hooks must be a table of hook names to commands")
     for name, cmd in value.items():
         _validate_choice(name, HOOKS, "hook")
         if not isinstance(cmd, str):
-            raise ValueError(f"hook {name} must be a string")
+            raise TypeError(f"hook {name} must be a string")
     return value
 
 
@@ -142,10 +129,10 @@ class Tunnel:
     name: str
 
 
-Target = Union[Action, Tunnel]
+Target = Action | Tunnel
 
 
-def _parse_target(value: Union[str, Target]) -> Target:
+def _parse_target(value: str | Target) -> Target:
     """Parses `action:<action>` or `tunnel:<name>`."""
     if isinstance(value, (Action, Tunnel)):
         return value
@@ -162,13 +149,13 @@ def _parse_target(value: Union[str, Target]) -> Target:
 class Rule:
     name: str
     target: Target
-    saddr: Optional[List[IPNetwork]] = None
-    daddr: Optional[List[IPNetwork]] = None
-    protocol: Optional[List[str]] = None
-    sport: Optional[List[int]] = None
-    dport: Optional[List[int]] = None
-    skuid: Optional[List[int]] = None
-    app: Optional[List[str]] = None
+    saddr: list[IPNetwork] | None = None
+    daddr: list[IPNetwork] | None = None
+    protocol: list[str] | None = None
+    sport: list[int] | None = None
+    dport: list[int] | None = None
+    skuid: list[int] | None = None
+    app: list[str] | None = None
 
     def __post_init__(self):
         _validate_pattern(self.name, RULE_NAME, "rule name")
@@ -207,7 +194,7 @@ class Rule:
             ]
 
     @property
-    def families(self) -> List[int]:
+    def families(self) -> list[int]:
         """The IP versions the rule matches: those of its addresses, both without addresses."""
         addrs = self.saddr or self.daddr
         return _versions(addrs) if addrs else [4, 6]
@@ -217,7 +204,7 @@ class Rule:
         return all(getattr(self, name) is None for name in MATCH_FIELDS)
 
 
-def _versions(networks: List[IPNetwork]) -> List[int]:
+def _versions(networks: list[IPNetwork]) -> list[int]:
     return sorted({n.version for n in networks})
 
 
@@ -226,7 +213,7 @@ class WireguardSSHReverseOpts:
     ssh_host: str
     ssh_user: str
     elevation: str
-    tunnels: Dict[str, int]
+    tunnels: dict[str, int]
 
     def __post_init__(self):
         _validate_host(self.ssh_host)
@@ -238,34 +225,28 @@ class WireguardSSHReverseOpts:
 @dataclass
 class AdbReverseOpts:
     elevation: str
-    tunnels: Dict[str, int]
-    serial: Optional[str] = None
+    tunnels: dict[str, int]
+    serial: str | None = None
 
     def __post_init__(self):
         _validate_choice(self.elevation, ELEVATIONS, "elevation")
         _validate_tunnels(self.tunnels)
 
 
-O = TypeVar("O", bound=Union[WireguardSSHReverseOpts, AdbReverseOpts])
-
-
 @dataclass
-class Profile(Generic[O]):
+class Profile[O: WireguardSSHReverseOpts | AdbReverseOpts]:
     mode: str
     mode_opts: O
-    rules: List[Rule] = field(default_factory=list)
-    hooks: Dict[str, str] = field(default_factory=dict)
+    rules: list[Rule] = field(default_factory=list)
+    hooks: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
 class Config:
-    profiles: Dict[str, Profile[Any]] = field(default_factory=dict)
+    profiles: dict[str, Profile[Any]] = field(default_factory=dict)
 
 
-T = TypeVar("T", bound="DataclassInstance")
-
-
-def _from_dict(cls: Type[T], data: Any, context: str) -> T:
+def _from_dict[T: DataclassInstance](cls: type[T], data: Any, context: str) -> T:
     """Instantiates a dataclass from a dict, strictly rejecting unknown keys."""
     if not isinstance(data, dict):
         raise ConfigValidationError(f"{context} must be a dictionary/table")
@@ -280,15 +261,15 @@ def _from_dict(cls: Type[T], data: Any, context: str) -> T:
     try:
         return cls(**data)
     except (TypeError, ValueError) as e:
-        raise ConfigValidationError(f"Invalid data in {context}: {e}")
+        raise ConfigValidationError(f"Invalid data in {context}: {e}") from e
 
 
 def parse_config_string(toml_content: str) -> Config:
     """Parses a TOML configuration string and returns a Config object strictly."""
     try:
         data = tomllib.loads(toml_content)
-    except Exception as e:
-        raise ConfigValidationError(f"Invalid TOML: {e}")
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigValidationError(f"Invalid TOML: {e}") from e
 
     # Validate root
     unknown_keys = set(data.keys()) - {"profiles"}
@@ -386,8 +367,10 @@ def parse_config_string(toml_content: str) -> Config:
         hooks = profile_dict.get("hooks", {})
         try:
             _validate_hooks(hooks)
-        except ValueError as e:
-            raise ConfigValidationError(f"Invalid hooks in profile '{profile_id}': {e}")
+        except (TypeError, ValueError) as e:
+            raise ConfigValidationError(
+                f"Invalid hooks in profile '{profile_id}': {e}"
+            ) from e
 
         # Instantiate profile
         parsed_profiles[profile_id] = Profile(
@@ -405,7 +388,7 @@ def load_config(file_path: Path) -> Config:
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
-    except Exception as e:
-        raise ConfigValidationError(f"Failed to read file {file_path}: {e}")
+    except (OSError, UnicodeDecodeError) as e:
+        raise ConfigValidationError(f"Failed to read file {file_path}: {e}") from e
     logger.debug(f"Config {file_path}:\n{content}")
     return parse_config_string(content)
