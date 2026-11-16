@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/devcontainers/python:3.14-trixie
+FROM mcr.microsoft.com/devcontainers/python:3.15-trixie
 
 # Install uv from Astral's official container image
 COPY --from=ghcr.io/astral-sh/uv:0.13.4 /uv /uvx /bin/
